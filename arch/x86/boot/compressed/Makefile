@@ -65,7 +65,10 @@ LDFLAGS_vmlinux := -pie $(call ld-option, --no-dynamic-linker)
 ifdef CONFIG_LD_ORPHAN_WARN
 LDFLAGS_vmlinux += --orphan-handling=warn
 endif
-LDFLAGS_vmlinux += -T
+ifeq ($(CONFIG_RELOCATABLE), y)
+KBUILD_LDFLAGS += -z notext
+endif
+LDFLAGS_vmlinux := -T
 
 hostprogs	:= mkpiggy
 HOST_EXTRACFLAGS += -I$(srctree)/tools/include
