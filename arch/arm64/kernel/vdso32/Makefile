@@ -15,7 +15,7 @@ CC_COMPAT_CLANG_FLAGS := --target=$(notdir $(CROSS_COMPILE_COMPAT:%-=%))
 CC_COMPAT ?= $(CC)
 CC_COMPAT += $(CC_COMPAT_CLANG_FLAGS)
 
-ifneq ($(LLVM),)
+ifeq ($(LLVM),1)
 LD_COMPAT ?= $(LD)
 else
 LD_COMPAT ?= $(CROSS_COMPILE_COMPAT)ld
