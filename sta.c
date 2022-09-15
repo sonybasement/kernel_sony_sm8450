@@ -9502,7 +9502,12 @@ static enum sigma_cmd_result cmd_sta_reset_default(struct sigma_dut *dut,
 	dut->dpp_local_bootstrap = -1;
 	wpa_command(intf, "SET dpp_config_processing 2");
 	wpa_command(intf, "SET dpp_mud_url ");
+	wpa_command(intf, "SET dpp_extra_conf_req_name ");
+	wpa_command(intf, "SET dpp_extra_conf_req_value ");
+	wpa_command(intf, "SET dpp_connector_privacy_default 0");
 	dpp_mdns_stop(dut);
+	unlink("/tmp/dpp-rest-server.uri");
+	unlink("/tmp/dpp-rest-server.id");
 
 	wpa_command(intf, "VENDOR_ELEM_REMOVE 13 *");
 
