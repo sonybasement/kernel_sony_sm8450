@@ -2623,7 +2623,7 @@ static int set_eap_common(struct sigma_dut *dut, struct sigma_conn *conn,
 			char msg[300];
 
 			snprintf(msg, sizeof(msg),
-				 "ErrorCode,trustedRootCA file (%s) not found",
+				 "ErrorCode,imsiPrivacyCert file (%s) not found",
 				 buf);
 			send_resp(dut, conn, SIGMA_ERROR, msg);
 			return STATUS_SENT_ERROR;
@@ -2633,6 +2633,11 @@ static int set_eap_common(struct sigma_dut *dut, struct sigma_conn *conn,
 				       buf) < 0)
 			return ERROR_SEND_STATUS;
 	}
+
+	val = get_param(cmd, "imsiPrivacyCertID");
+	if (val && set_network_quoted(ifname, id, "imsi_privacy_attr",
+				      val) < 0)
+		return ERROR_SEND_STATUS;
 
 	if (dut->akm_values &
 	    ((1 << AKM_FILS_SHA256) |
