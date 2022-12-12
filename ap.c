@@ -148,6 +148,7 @@ static int ap_ft_enabled(struct sigma_dut *dut)
 		 ((1 << AKM_FT_EAP) |
 		  (1 << AKM_FT_PSK) |
 		  (1 << AKM_FT_SAE) |
+		  (1 << AKM_FT_SAE_EXT_KEY) |
 		  (1 << AKM_FT_SUITE_B) |
 		  (1 << AKM_FT_FILS_SHA256) |
 		  (1 << AKM_FT_FILS_SHA384)));
@@ -663,6 +664,64 @@ static void get_he_mcs_nssmap(uint8_t *mcsnssmap, uint8_t nss,
 	}
 	he_reset_mcs_values_for_unsupported_ss(mcsnssmap, nss);
 }
+
+
+#ifdef NL80211_SUPPORT
+static int wcn_set_txbf_periodic_ndp(struct sigma_dut *dut, const char *intf,
+				     uint8_t cfg_val)
+{
+	struct nl_msg *msg;
+	struct nlattr *params;
+	int ifindex, ret;
+
+	ifindex = if_nametoindex(intf);
+	if (ifindex == 0) {
+		sigma_dut_print(dut, DUT_MSG_ERROR,
+				"%s: Index for interface %s not found",
+				__func__, intf);
+		return -1;
+	}
+
+	msg = nl80211_drv_msg(dut, dut->nl_ctx, ifindex, 0,
+			      NL80211_CMD_VENDOR);
+	if (!msg) {
+		sigma_dut_print(dut, DUT_MSG_ERROR,
+				"%s: err in adding vendor_cmd", __func__);
+		return -1;
+	}
+
+	if (nla_put_u32(msg, NL80211_ATTR_VENDOR_ID, OUI_QCA) ||
+	    nla_put_u32(msg, NL80211_ATTR_VENDOR_SUBCMD,
+			QCA_NL80211_VENDOR_SUBCMD_SET_WIFI_CONFIGURATION)) {
+		sigma_dut_print(dut, DUT_MSG_ERROR,
+				"%s: err in adding vendor_attr", __func__);
+		nlmsg_free(msg);
+		return -1;
+	}
+
+	params = nla_nest_start(msg, NL80211_ATTR_VENDOR_DATA);
+	if (!params ||
+	    nla_put_u8(msg,
+		    QCA_WLAN_VENDOR_ATTR_CONFIG_BEAMFORMER_PERIODIC_SOUNDING,
+		    cfg_val)) {
+		sigma_dut_print(dut, DUT_MSG_ERROR,
+				"%s: err in adding vendor_data", __func__);
+		nlmsg_free(msg);
+		return -1;
+	}
+
+	nla_nest_end(msg, params);
+	ret = send_and_recv_msgs(dut, dut->nl_ctx, msg, NULL, NULL);
+	if (ret) {
+		sigma_dut_print(dut, DUT_MSG_ERROR,
+				"%s: err in send_and_recv_msgs, ret=%d (%s)",
+				__func__, ret, strerror(-ret));
+		return ret;
+	}
+
+	return 0;
+}
+#endif /* NL80211_SUPPORT */
 
 
 static enum sigma_cmd_result cmd_ap_set_wireless(struct sigma_dut *dut,
@@ -1324,6 +1383,13 @@ static enum sigma_cmd_result cmd_ap_set_wireless(struct sigma_dut *dut,
 		dut->ap_txBF = strcasecmp(val, "enable") == 0;
 		dut->he_sounding = VALUE_DISABLED;
 		dut->he_set_sta_1x1 = VALUE_ENABLED;
+#ifdef NL80211_SUPPORT
+		if (dut->ap_txBF && get_driver_type(dut) == DRIVER_LINUX_WCN &&
+		    wcn_set_txbf_periodic_ndp(dut, get_main_ifname(dut), 1)) {
+			sigma_dut_print(dut, DUT_MSG_ERROR,
+					"Failed to set NDP periodicity");
+		}
+#endif /* NL80211_SUPPORT */
 	}
 
 	val = get_param(cmd, "MU_TxBF");
@@ -8288,6 +8354,8 @@ write_conf:
 			{ AKM_FILS_SHA384, "FILS-SHA384" },
 			{ AKM_FT_FILS_SHA256, "FT-FILS-SHA256" },
 			{ AKM_FT_FILS_SHA384, "FT-FILS-SHA384" },
+			{ AKM_SAE_EXT_KEY, "SAE-EXT-KEY" },
+			{ AKM_FT_SAE_EXT_KEY, "FT-SAE-EXT-KEY" },
 		};
 		int first = 1;
 		unsigned int i;
@@ -9923,8 +9991,7 @@ static enum sigma_cmd_result cmd_ap_reset_default(struct sigma_dut *dut,
 
 	dut->ap_ocvc = dut->user_config_ap_ocvc;
 
-	if (dut->program == PROGRAM_HS2 || dut->program == PROGRAM_HS2_R2 ||
-	    dut->program == PROGRAM_HS2_R3 || dut->program == PROGRAM_HS2_R4 ||
+	if (is_passpoint(dut->program) ||
 	    dut->program == PROGRAM_IOTLP) {
 		int i;
 
@@ -9981,8 +10048,8 @@ static enum sigma_cmd_result cmd_ap_reset_default(struct sigma_dut *dut,
 		dut->ap_add_sha256 = 0;
 	}
 
-	if (dut->program == PROGRAM_HS2_R2 || dut->program == PROGRAM_HS2_R3 ||
-	     dut->program == PROGRAM_HS2_R4 || dut->program == PROGRAM_IOTLP) {
+	if (is_passpoint_r2_or_newer(dut->program) ||
+	    dut->program == PROGRAM_IOTLP) {
 		int i;
 		const char hessid[] = "50:6f:9a:00:11:22";
 
