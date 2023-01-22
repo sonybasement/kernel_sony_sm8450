@@ -1,49 +1,29 @@
 ifneq ($(CONFIG_ARCH_QTI_VM), y)
 ifeq ($(CONFIG_BUILD_ARM64_DT_OVERLAY),y)
 
-
-SOMC_PRODUCT_OPERATOR = $(SOMC_TARGET_PRODUCT)_$(SOMC_TARGET_OPERATOR)
-
-ifeq ($(SOMC_PRODUCT_OPERATOR),pdx223_generic)
-dtbo-$(CONFIG_ARCH_WAIPIO) += waipio-nagara-pdx223_generic-overlay.dtbo
+ifeq ($(CONFIG_ARCH_SONY_NAGARA),y)
+dtbo-$(CONFIG_MACH_SONY_PDX223) += waipio-nagara-pdx223_generic-overlay.dtbo
 
 waipio-nagara-pdx223_generic-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb waipio-lte.dtb
 endif
 
-ifeq ($(SOMC_PRODUCT_OPERATOR),pdx224_generic)
-dtbo-$(CONFIG_ARCH_WAIPIO) += waipio-nagara-pdx224_generic-overlay.dtbo
+ifeq ($(CONFIG_ARCH_SONY_NAGARA),y)
+dtbo-$(CONFIG_MACH_SONY_PDX224) += waipio-nagara-pdx224_generic-overlay.dtbo
 
 waipio-nagara-pdx224_generic-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb waipio-lte.dtb
 endif
 else
-dtb-$(CONFIG_ARCH_WAIPIO) += waipio-nagara-cdb.dtb \
-	waipio-nagara-cdb_ets.dtb \
+dtb-$(CONFIG_MACH_SONY_PDX223) += \
 	waipio-nagara-pdx223_generic.dtb \
-	waipio-nagara-pdx223_ets.dtb \
-	waipio-nagara-pdx223_j.dtb \
-	waipio-nagara-pdx224_generic.dtb \
-	waipio-nagara-pdx224_ets.dtb \
-	waipio-nagara-pdx224_j.dtb
-# Waipio V2
-dtb-$(CONFIG_ARCH_WAIPIO) += waipio-v2-nagara-cdb.dtb \
-	waipio-v2-nagara-cdb_ets.dtb \
 	waipio-v2-nagara-pdx223_generic.dtb \
-	waipio-v2-nagara-pdx223_ets.dtb \
-	waipio-v2-nagara-pdx223_j.dtb \
+	waipio-lte-nagara-pdx223_generic.dtb
+# Waipio V2
+dtb-$(CONFIG_MACH_SONY_PDX224) += \
+	waipio-nagara-pdx224_generic.dtb  \
 	waipio-v2-nagara-pdx224_generic.dtb \
-	waipio-v2-nagara-pdx224_ets.dtb \
-	waipio-v2-nagara-pdx224_j.dtb
-# Waipio LTE
-dtb-$(CONFIG_ARCH_WAIPIO) += waipio-lte-nagara-cdb.dtb \
-	waipio-lte-nagara-cdb_ets.dtb \
-	waipio-lte-nagara-pdx223_generic.dtb \
-	waipio-lte-nagara-pdx223_ets.dtb \
-	waipio-lte-nagara-pdx223_j.dtb \
-	waipio-lte-nagara-pdx224_generic.dtb \
-	waipio-lte-nagara-pdx224_ets.dtb \
-	waipio-lte-nagara-pdx224_j.dtb
+	waipio-lte-nagara-pdx224_generic.dtb 
 endif
-
+endif
 
 ifeq ($(CONFIG_BUILD_ARM64_DT_OVERLAY),y)
 dtbo-$(CONFIG_ARCH_LAHAINA) += lahaina-rumi-overlay.dtbo \
@@ -121,7 +101,7 @@ dtb-$(CONFIG_ARCH_LAHAINA) += lahaina-rumi.dtb \
 	lahaina-mtp-v2.1.dtb
 endif
 
-ifneq ($(SOMC_PLATFORM),nagara)
+ifneq ($(CONFIG_ARCH_SONY_NAGARA),y)
 ifeq ($(CONFIG_BUILD_ARM64_DT_OVERLAY),y)
 dtbo-$(CONFIG_ARCH_WAIPIO) += waipio-rumi-overlay.dtbo \
 	waipio-mtp-pm8008-overlay.dtbo \

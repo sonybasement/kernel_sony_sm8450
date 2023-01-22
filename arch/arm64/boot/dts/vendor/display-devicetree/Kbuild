@@ -1,4 +1,4 @@
-ifneq ($(SOMC_PLATFORM), nagara)
+ifneq ($(CONFIG_ARCH_SONY_NAGARA),y)
 ifneq ($(CONFIG_ARCH_QTI_VM), y)
 dtbo-$(CONFIG_ARCH_WAIPIO) += display/waipio-sde.dtbo \
 		display/waipio-sde-display-mtp-overlay.dtbo \
@@ -16,12 +16,12 @@ dtbo-$(CONFIG_ARCH_WAIPIO) += display/trustedvm-waipio-sde-display-mtp-overlay.d
 		display/trustedvm-waipio-sde-display-qrd-overlay.dtbo
 endif
 
-ifneq ($(filter pdx223_generic ,$(SOMC_PRODUCT_OPERATOR)),)
+ifneq ($(CONFIG_MACH_SONY_PDX223),y)
 dtbo-$(CONFIG_ARCH_WAIPIO) += display/waipio-sde.dtbo \
 	display/waipio-sde-display-pdx223-overlay.dtbo
 endif
 
-ifneq ($(filter pdx224_generic ,$(SOMC_PRODUCT_OPERATOR)),)
+ifneq ($(CONFIG_MACH_SONY_PDX224),y)
 dtbo-$(CONFIG_ARCH_WAIPIO) += display/waipio-sde.dtbo \
 	display/waipio-sde-display-pdx224-overlay.dtbo
 endif
