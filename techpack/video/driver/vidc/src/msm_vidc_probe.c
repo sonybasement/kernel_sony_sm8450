@@ -107,8 +107,23 @@ static ssize_t sku_version_show(struct device *dev,
 
 static DEVICE_ATTR_RO(sku_version);
 
+static ssize_t crash_reason_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct msm_vidc_core* core = dev_get_drvdata(dev);
+	int r = 0;
+
+	r = snprintf(buf, PAGE_SIZE, "%s\n", core->crash_reason_buf);
+	memset(core->crash_reason_buf, 0, sizeof(core->crash_reason_buf));
+
+	return r;
+}
+
+static DEVICE_ATTR_RO(crash_reason);
+
 static struct attribute *msm_vidc_core_attrs[] = {
 	&dev_attr_sku_version.attr,
+	&dev_attr_crash_reason.attr,
 	NULL
 };
 
