@@ -210,6 +210,10 @@ msm_drm-$(CONFIG_DRM_MSM_DSI) += dsi/dsi_phy.o \
 
 msm_drm-$(CONFIG_DSI_PARSER) += dsi/dsi_parser.o
 
+msm_drm-$(CONFIG_DRM_SDE_SPECIFIC_PANEL) += dsi/dsi_panel_driver.o \
+					    dsi/dsi_panel_driver_hw.o \
+					    dsi/incell.o
+
 msm_drm-$(CONFIG_THERMAL_OF) += msm_cooling_device.o
 
 msm_drm-$(CONFIG_DRM_MSM) += msm_atomic.o \
