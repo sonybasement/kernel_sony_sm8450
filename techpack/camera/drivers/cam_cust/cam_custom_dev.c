@@ -7,6 +7,7 @@
 #include <linux/io.h>
 #include <linux/of.h>
 #include <linux/module.h>
+#include <linux/ion.h>
 #include <linux/iommu.h>
 #include <linux/timer.h>
 #include <linux/kernel.h>
@@ -19,7 +20,6 @@
 #include "cam_node.h"
 #include "cam_debug_util.h"
 #include "cam_smmu_api.h"
-#include "cam_compat.h"
 #include "camera_main.h"
 
 static struct cam_custom_dev g_custom_dev;

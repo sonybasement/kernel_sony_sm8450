@@ -1256,6 +1256,11 @@ static int32_t cam_csiphy_external_cmd(struct csiphy_device *csiphy_dev,
 	struct cam_csiphy_info cam_cmd_csiphy_info;
 	int32_t rc = 0;
 	int32_t  index = -1;
+/* sony extension begin */
+	uint32_t lane_enable = 0;
+	uint16_t lane_assign = 0;
+	uint8_t lane_cnt = 0;
+/* sony extension end */
 
 	if (copy_from_user(&cam_cmd_csiphy_info,
 		u64_to_user_ptr(p_submit_cmd->packet_handle),
@@ -1284,6 +1289,55 @@ static int32_t cam_csiphy_external_cmd(struct csiphy_device *csiphy_dev,
 			__func__,
 			csiphy_dev->csiphy_info[index].settle_time,
 			csiphy_dev->csiphy_info[index].lane_cnt);
+/* sony extension begin */
+		csiphy_dev->csiphy_info[index].secure_mode =
+			cam_cmd_csiphy_info.secure_mode;
+		csiphy_dev->csiphy_info[index].mipi_flags =
+			cam_cmd_csiphy_info.mipi_flags;
+
+		lane_assign = csiphy_dev->csiphy_info[index].lane_assign;
+		lane_cnt = csiphy_dev->csiphy_info[index].lane_cnt;
+
+		while (lane_cnt--) {
+			rc = cam_csiphy_get_lane_enable(csiphy_dev, index,
+				(lane_assign & 0xF), &lane_enable);
+			if (rc) {
+				CAM_ERR(CAM_CSIPHY, "Wrong lane configuration: %d",
+					csiphy_dev->csiphy_info[index].lane_assign);
+				if ((csiphy_dev->combo_mode) ||
+					(csiphy_dev->cphy_dphy_combo_mode)) {
+					CAM_DBG(CAM_CSIPHY,
+						"Resetting error to zero for other devices to configure");
+					rc = 0;
+				}
+				lane_enable = 0;
+				csiphy_dev->csiphy_info[index].lane_enable = lane_enable;
+			}
+			csiphy_dev->csiphy_info[index].lane_enable |= lane_enable;
+			lane_assign >>= 4;
+		}
+
+		if (cam_cmd_csiphy_info.secure_mode == 1)
+			cam_csiphy_update_secure_info(csiphy_dev,
+				index);
+
+		CAM_DBG(CAM_CSIPHY,
+			"phy version:%d, phy_idx: %d",
+			csiphy_dev->hw_version,
+			csiphy_dev->soc_info.index);
+		CAM_DBG(CAM_CSIPHY,
+			"3phase:%d, combo mode:%d, secure mode:%d",
+			csiphy_dev->csiphy_info[index].csiphy_3phase,
+			csiphy_dev->combo_mode,
+			cam_cmd_csiphy_info.secure_mode);
+		CAM_DBG(CAM_CSIPHY,
+			"lane_cnt: 0x%x, lane_assign: 0x%x, lane_enable: 0x%x, settle time:%llu, datarate:%llu",
+			csiphy_dev->csiphy_info[index].lane_cnt,
+			csiphy_dev->csiphy_info[index].lane_assign,
+			csiphy_dev->csiphy_info[index].lane_enable,
+			csiphy_dev->csiphy_info[index].settle_time,
+			csiphy_dev->csiphy_info[index].data_rate);
+/* sony extension end */
 	}
 
 	return rc;

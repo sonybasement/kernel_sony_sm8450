@@ -25,7 +25,6 @@
 #include "cam_trace.h"
 #include "cam_smmu_api.h"
 #include "cam_common_util.h"
-#include "cam_compat.h"
 
 static const char drv_name[] = "vfe_bus";
 
@@ -1882,7 +1881,7 @@ static int cam_vfe_bus_ver3_init_comp_grp(uint32_t index,
 		rsrc_data->comp_grp_type != CAM_VFE_BUS_VER3_COMP_GRP_1)
 		rsrc_data->ubwc_static_ctrl = 0;
 	else {
-		ddr_type = cam_get_ddr_type();
+		ddr_type = of_fdt_get_ddrtype();
 		if ((ddr_type == DDR_TYPE_LPDDR5) ||
 			(ddr_type == DDR_TYPE_LPDDR5X))
 			rsrc_data->ubwc_static_ctrl =
@@ -3563,13 +3562,22 @@ static int cam_vfe_bus_ver3_update_ubwc_config_v2(void *cmd_args)
 			goto end;
 		}
 
+/* sony extension begin */
+/* for fix the config do not setting after recovery */
+#if 0
 		if (wm_data->packer_cfg !=
 			ubwc_generic_plane_cfg->packer_config ||
 			!wm_data->init_cfg_done) {
+#endif
+/* sony extension end */
 			wm_data->packer_cfg =
 				ubwc_generic_plane_cfg->packer_config;
 			wm_data->ubwc_updated = true;
+/* sony extension begin */
+#if 0
 		}
+#endif
+/* sony extension end */
 
 		if ((!wm_data->is_dual) && ((wm_data->h_init !=
 			ubwc_generic_plane_cfg->h_init) ||
@@ -3586,13 +3594,22 @@ static int cam_vfe_bus_ver3_update_ubwc_config_v2(void *cmd_args)
 			wm_data->ubwc_updated = true;
 		}
 
+/* sony extension begin */
+/* for fix the config do not setting after recovery */
+#if 0
 		if (wm_data->ubwc_mode_cfg !=
 			ubwc_generic_plane_cfg->mode_config_0 ||
 			!wm_data->init_cfg_done) {
+#endif
+/* sony extension end */
 			wm_data->ubwc_mode_cfg =
 				ubwc_generic_plane_cfg->mode_config_0;
 			wm_data->ubwc_updated = true;
+/* sony extension begin */
+#if 0
 		}
+#endif
+/* sony extension end */
 
 		if (wm_data->ubwc_ctrl_2 !=
 			ubwc_generic_plane_cfg->ctrl_2 ||

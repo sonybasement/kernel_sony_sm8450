@@ -86,6 +86,8 @@ int cam_ife_csid_is_pix_res_format_supported(
 	case CAM_FORMAT_DPCM_14_8_14:
 	case CAM_FORMAT_DPCM_14_10_14:
 	case CAM_FORMAT_DPCM_12_10_12:
+	case CAM_FORMAT_YUV422:
+	case CAM_FORMAT_YUV422_10:
 		rc = 0;
 		break;
 	default:
@@ -197,6 +199,11 @@ int cam_ife_csid_get_format_rdi(
 				path_format->plain_fmt = 0x1;
 			}
 			break;
+/* sony extension begin */
+		case CAM_FORMAT_PLAIN128:
+			path_format->decode_fmt = 0xf;
+			break;
+/* sony extension end */
 		case CAM_FORMAT_PLAIN16_12:
 			path_format->decode_fmt = 0x3;
 			path_format->plain_fmt = 0x1;

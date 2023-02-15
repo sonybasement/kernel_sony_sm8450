@@ -23,7 +23,6 @@
 #include "cam_trace.h"
 #include "cam_common_util.h"
 #include "cam_presil_hw_access.h"
-#include "cam_compat.h"
 
 #define CAM_MEM_SHARED_BUFFER_PAD_4K (4 * 1024)
 
@@ -38,13 +37,13 @@ static int cam_mem_mgr_get_dma_heaps(void);
 #ifdef CONFIG_CAM_PRESIL
 static inline void cam_mem_mgr_reset_presil_params(int idx)
 {
-	tbl.bufq[idx].presil_params.fd_for_umd_daemon = -1;
-	tbl.bufq[idx].presil_params.refcount = 0;
+        tbl.bufq[idx].presil_params.fd_for_umd_daemon = -1;
+        tbl.bufq[idx].presil_params.refcount = 0;
 }
 #else
 static inline void cam_mem_mgr_reset_presil_params(int idx)
 {
-	return;
+        return;
 }
 #endif
 
@@ -110,9 +109,12 @@ static int cam_mem_util_get_dma_dir(uint32_t flags)
 	return rc;
 }
 
-static int cam_mem_util_map_cpu_va(struct dma_buf *dmabuf, uintptr_t *vaddr, size_t *len)
+static int cam_mem_util_map_cpu_va(struct dma_buf *dmabuf,
+	uintptr_t *vaddr,
+	size_t *len)
 {
 	int rc = 0;
+	void *addr;
 
 	/*
 	 * dma_buf_begin_cpu_access() and dma_buf_end_cpu_access()
@@ -124,20 +126,24 @@ static int cam_mem_util_map_cpu_va(struct dma_buf *dmabuf, uintptr_t *vaddr, siz
 		return rc;
 	}
 
-	rc = cam_compat_util_get_dmabuf_va(dmabuf, vaddr);
-	if (rc) {
-		CAM_ERR(CAM_MEM, "kernel vmap failed: rc = %d", rc);
+	addr = dma_buf_vmap(dmabuf);
+	if (!addr) {
+		CAM_ERR(CAM_MEM, "kernel map fail");
+		*vaddr = 0;
 		*len = 0;
-		dma_buf_end_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
-	}
-	else {
-		*len = dmabuf->size;
-		CAM_DBG(CAM_MEM, "vaddr = %llu, len = %zu", *vaddr, *len);
+		rc = -ENOSPC;
+		goto fail;
 	}
 
+	*vaddr = (uint64_t)addr;
+	*len = dmabuf->size;
+
+	return 0;
+
+fail:
+	dma_buf_end_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
 	return rc;
 }
-
 static int cam_mem_util_unmap_cpu_va(struct dma_buf *dmabuf,
 	uint64_t vaddr)
 {
@@ -179,8 +185,14 @@ static int cam_mem_mgr_create_debug_fs(void)
 	/* Store parent inode for cleanup in caller */
 	tbl.dentry = dbgfileptr;
 
-	debugfs_create_bool("alloc_profile_enable", 0644,
+	dbgfileptr = debugfs_create_bool("alloc_profile_enable", 0644,
 		tbl.dentry, &tbl.alloc_profile_enable);
+	if (IS_ERR(dbgfileptr)) {
+		if (PTR_ERR(dbgfileptr) == -ENODEV)
+			CAM_WARN(CAM_MEM, "DebugFS not enabled in kernel!");
+		else
+			rc = PTR_ERR(dbgfileptr);
+	}
 end:
 	return rc;
 }
@@ -208,11 +220,23 @@ int cam_mem_mgr_init(void)
 	}
 #endif
 	bitmap_size = BITS_TO_LONGS(CAM_MEM_BUFQ_MAX) * sizeof(long);
+/* sony extension begin */
+#if 1
+	if (!tbl.bitmap) {
+		tbl.bitmap = kzalloc(bitmap_size, GFP_KERNEL);
+		if (!tbl.bitmap) {
+			rc = -ENOMEM;
+			goto put_heaps;
+		}
+	}
+#else
 	tbl.bitmap = kzalloc(bitmap_size, GFP_KERNEL);
 	if (!tbl.bitmap) {
 		rc = -ENOMEM;
 		goto put_heaps;
 	}
+#endif
+/* sony extension end */
 
 	tbl.bits = bitmap_size * BITS_PER_BYTE;
 	bitmap_zero(tbl.bitmap, tbl.bits);
@@ -1321,8 +1345,17 @@ void cam_mem_mgr_deinit(void)
 	debugfs_remove_recursive(tbl.dentry);
 	mutex_lock(&tbl.m_lock);
 	bitmap_zero(tbl.bitmap, tbl.bits);
+/* sony extension begin */
+#if 1
+	if (tbl.bitmap) {
+		kfree(tbl.bitmap);
+		tbl.bitmap = NULL;
+	}
+#else
 	kfree(tbl.bitmap);
 	tbl.bitmap = NULL;
+#endif
+/* sony extension end */
 	tbl.dbg_buf_idx = -1;
 	mutex_unlock(&tbl.m_lock);
 	mutex_destroy(&tbl.m_lock);

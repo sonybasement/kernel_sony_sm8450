@@ -3863,9 +3863,11 @@ static int cam_smmu_setup_cb(struct cam_context_bank_info *cb,
 			goto end;
 		}
 
-		/* Enable custom iommu features, if applicable */
-		cam_smmu_util_iommu_custom(dev, cb->discard_iova_start,
-			cb->discard_iova_len);
+		iommu_dma_enable_best_fit_algo(dev);
+
+		if (cb->discard_iova_start)
+			iommu_dma_reserve_iova(dev, cb->discard_iova_start,
+				cb->discard_iova_len);
 
 		cb->state = CAM_SMMU_ATTACH;
 	} else {
@@ -4441,10 +4443,16 @@ static int cam_smmu_create_debug_fs(void)
 	/* Store parent inode for cleanup in caller */
 	iommu_cb_set.dentry = dbgfileptr;
 
-	debugfs_create_bool("cb_dump_enable", 0644,
+	dbgfileptr = debugfs_create_bool("cb_dump_enable", 0644,
 		iommu_cb_set.dentry, &iommu_cb_set.cb_dump_enable);
-	debugfs_create_bool("map_profile_enable", 0644,
+	dbgfileptr = debugfs_create_bool("map_profile_enable", 0644,
 		iommu_cb_set.dentry, &iommu_cb_set.map_profile_enable);
+	if (IS_ERR(dbgfileptr)) {
+		if (PTR_ERR(dbgfileptr) == -ENODEV)
+			CAM_WARN(CAM_SMMU, "DebugFS not enabled in kernel!");
+		else
+			rc = PTR_ERR(dbgfileptr);
+	}
 end:
 	return rc;
 }

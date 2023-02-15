@@ -5955,9 +5955,9 @@ static int cam_ife_mgr_config_hw(void *hw_mgr_priv,
 				CAM_ERR(CAM_ISP,
 					"config done completion timeout for req_id=%llu ctx_index %d",
 					cfg->request_id, ctx->ctx_index);
-				if (cam_cdm_detect_hang_error(ctx->cdm_handle))
-					cam_cdm_dump_debug_registers(
-						ctx->cdm_handle);
+				if (!cam_cdm_detect_hang_error(ctx->cdm_handle))
+					CAM_ERR(CAM_ISP, "CDM Workqueue delayed");
+
 				rc = -ETIMEDOUT;
 			} else {
 				CAM_DBG(CAM_ISP,
@@ -6026,6 +6026,10 @@ static int cam_ife_mgr_stop_hw_in_overflow(void *stop_hw_args)
 		cam_ife_mgr_csid_stop_hw(ctx, &ctx->res_list_ife_csid,
 			ctx->base[i].idx, CAM_CSID_HALT_IMMEDIATELY);
 	}
+
+/* sony extension begin */
+	cam_ife_mgr_finish_clk_bw_update(ctx, 0, true);
+/* sony extension end */
 
 	/* IFE mux in resources */
 	list_for_each_entry(hw_mgr_res, &ctx->res_list_ife_src, list) {
@@ -11749,6 +11753,11 @@ static int cam_ife_hw_mgr_handle_csid_error(
 	if (err_type & CAM_ISP_HW_ERROR_CSID_SENSOR_FRAME_DROP)
 		cam_ife_hw_mgr_handle_csid_frame_drop(event_info, ctx);
 
+/* sony extension begin */
+	if (g_ife_hw_mgr.debug_cfg.enable_recovery)
+		error_event_data.recovery_enabled = true;
+/* sony extension end */
+
 	if ((err_type & CAM_ISP_HW_ERROR_CSID_FATAL) &&
 		g_ife_hw_mgr.debug_cfg.enable_csid_recovery) {
 
@@ -12680,35 +12689,45 @@ static int cam_ife_hw_mgr_debug_register(void)
 	/* Store parent inode for cleanup in caller */
 	g_ife_hw_mgr.debug_cfg.dentry = dbgfileptr;
 
-	debugfs_create_file("ife_csid_debug", 0644,
+	dbgfileptr = debugfs_create_file("ife_csid_debug", 0644,
 		g_ife_hw_mgr.debug_cfg.dentry, NULL, &cam_ife_csid_debug);
 	debugfs_create_u32("enable_recovery", 0644, g_ife_hw_mgr.debug_cfg.dentry,
 		&g_ife_hw_mgr.debug_cfg.enable_recovery);
-	debugfs_create_bool("enable_req_dump", 0644,
+	dbgfileptr = debugfs_create_bool("enable_req_dump", 0644,
 		g_ife_hw_mgr.debug_cfg.dentry,
 		&g_ife_hw_mgr.debug_cfg.enable_req_dump);
 	debugfs_create_u32("enable_csid_recovery", 0644,
 		g_ife_hw_mgr.debug_cfg.dentry,
 		&g_ife_hw_mgr.debug_cfg.enable_csid_recovery);
-	debugfs_create_file("ife_camif_debug", 0644,
+	dbgfileptr = debugfs_create_file("ife_camif_debug", 0644,
 		g_ife_hw_mgr.debug_cfg.dentry, NULL, &cam_ife_camif_debug);
-	debugfs_create_bool("per_req_reg_dump", 0644,
+	dbgfileptr = debugfs_create_bool("per_req_reg_dump", 0644,
 		g_ife_hw_mgr.debug_cfg.dentry,
 		&g_ife_hw_mgr.debug_cfg.per_req_reg_dump);
-	debugfs_create_bool("disable_ubwc_comp", 0644,
+	dbgfileptr = debugfs_create_bool("disable_ubwc_comp", 0644,
 		g_ife_hw_mgr.debug_cfg.dentry,
 		&g_ife_hw_mgr.debug_cfg.disable_ubwc_comp);
-	debugfs_create_file("sfe_debug", 0644,
+	dbgfileptr = debugfs_create_file("sfe_debug", 0644,
 		g_ife_hw_mgr.debug_cfg.dentry, NULL, &cam_ife_sfe_debug);
-	debugfs_create_file("sfe_sensor_diag_sel", 0644,
+	dbgfileptr = debugfs_create_file("sfe_sensor_diag_sel", 0644,
 		g_ife_hw_mgr.debug_cfg.dentry, NULL, &cam_ife_sfe_sensor_diag_debug);
-	debugfs_create_bool("disable_ife_mmu_prefetch", 0644,
+	dbgfileptr = debugfs_create_bool("disable_ife_mmu_prefetch", 0644,
 		g_ife_hw_mgr.debug_cfg.dentry,
 		&g_ife_hw_mgr.debug_cfg.disable_ife_mmu_prefetch);
-	debugfs_create_file("sfe_cache_debug", 0644,
+	dbgfileptr = debugfs_create_file("sfe_cache_debug", 0644,
 		g_ife_hw_mgr.debug_cfg.dentry, NULL, &cam_ife_sfe_cache_debug);
+
+	if (IS_ERR(dbgfileptr)) {
+		if (PTR_ERR(dbgfileptr) == -ENODEV)
+			CAM_WARN(CAM_ISP, "DebugFS not enabled in kernel!");
+		else
+			rc = PTR_ERR(dbgfileptr);
+	}
 end:
 	g_ife_hw_mgr.debug_cfg.enable_csid_recovery = 1;
+/* sony extension begin */
+	g_ife_hw_mgr.debug_cfg.enable_recovery = 1;
+/* sony extension end */
 	return rc;
 }
 
