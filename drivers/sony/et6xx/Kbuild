@@ -1,0 +1,7 @@
+obj-m := et603-int.o
+
+ifeq ($(CONFIG_ARCH_SONY_NAGARA),y)
+et603-int-objs := etxxx_fp.o
+else
+et603-int-objs := etxxx_fp.o navi_input.o
+endif
