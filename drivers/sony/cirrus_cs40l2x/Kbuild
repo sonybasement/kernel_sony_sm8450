@@ -1,0 +1,10 @@
+# add -Wall to try to catch everything we can.
+EXTRA_CFLAGS += -Wall
+
+ccflags-y := -I $(LOCAL_DIR)/../../include
+ccflags-y += -I $(src)/../../include
+# ccflags-y += -D CONFIG_HAPTICS_CS40L2X_INPUT
+
+cirrus_cs40l2x-objs = cs40l2x.o cs40l2x-tables.o
+obj-m += cirrus_cs40l2x.o
+
