@@ -1,4 +1,6 @@
+ifneq ($(CONFIG_ARCH_QTI_VM), y)
 ifeq ($(CONFIG_BUILD_ARM64_DT_OVERLAY),y)
+
 
 SOMC_PRODUCT_OPERATOR = $(SOMC_TARGET_PRODUCT)_$(SOMC_TARGET_OPERATOR)
 
@@ -6,12 +8,42 @@ ifeq ($(SOMC_PRODUCT_OPERATOR),pdx223_generic)
 dtbo-$(CONFIG_ARCH_WAIPIO) += waipio-nagara-pdx223_generic-overlay.dtbo
 
 waipio-nagara-pdx223_generic-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb waipio-lte.dtb
-else
-dtbo-$(CONFIG_ARCH_WAIPIO) += waipio-nagara-pdx223_generic-crossflash-overlay.dtbo
+endif
 
-waipio-nagara-pdx223_generic-crossflash-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb waipio-lte.dtb
+ifeq ($(SOMC_PRODUCT_OPERATOR),pdx224_generic)
+dtbo-$(CONFIG_ARCH_WAIPIO) += waipio-nagara-pdx224_generic-overlay.dtbo
+
+waipio-nagara-pdx224_generic-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb waipio-lte.dtb
 endif
 else
+dtb-$(CONFIG_ARCH_WAIPIO) += waipio-nagara-cdb.dtb \
+	waipio-nagara-cdb_ets.dtb \
+	waipio-nagara-pdx223_generic.dtb \
+	waipio-nagara-pdx223_ets.dtb \
+	waipio-nagara-pdx223_j.dtb \
+	waipio-nagara-pdx224_generic.dtb \
+	waipio-nagara-pdx224_ets.dtb \
+	waipio-nagara-pdx224_j.dtb
+# Waipio V2
+dtb-$(CONFIG_ARCH_WAIPIO) += waipio-v2-nagara-cdb.dtb \
+	waipio-v2-nagara-cdb_ets.dtb \
+	waipio-v2-nagara-pdx223_generic.dtb \
+	waipio-v2-nagara-pdx223_ets.dtb \
+	waipio-v2-nagara-pdx223_j.dtb \
+	waipio-v2-nagara-pdx224_generic.dtb \
+	waipio-v2-nagara-pdx224_ets.dtb \
+	waipio-v2-nagara-pdx224_j.dtb
+# Waipio LTE
+dtb-$(CONFIG_ARCH_WAIPIO) += waipio-lte-nagara-cdb.dtb \
+	waipio-lte-nagara-cdb_ets.dtb \
+	waipio-lte-nagara-pdx223_generic.dtb \
+	waipio-lte-nagara-pdx223_ets.dtb \
+	waipio-lte-nagara-pdx223_j.dtb \
+	waipio-lte-nagara-pdx224_generic.dtb \
+	waipio-lte-nagara-pdx224_ets.dtb \
+	waipio-lte-nagara-pdx224_j.dtb
+endif
+
 
 ifeq ($(CONFIG_BUILD_ARM64_DT_OVERLAY),y)
 dtbo-$(CONFIG_ARCH_LAHAINA) += lahaina-rumi-overlay.dtbo \
@@ -181,47 +213,30 @@ endif
 endif
 
 ifeq ($(CONFIG_BUILD_ARM64_DT_OVERLAY),y)
-        dtbo-$(CONFIG_ARCH_SM8150) += \
-                sm8150-cdp-overlay.dtbo \
-                sa8155-adp-star-overlay.dtbo \
-                sa8155p-adp-star-overlay.dtbo \
-                sa8155-v2-adp-air-overlay.dtbo \
-                sa8155p-v2-adp-air-overlay.dtbo
+	dtbo-$(CONFIG_ARCH_HOLI) +=  holi-rumi-overlay.dtbo
+dtbo-$(CONFIG_ARCH_HOLI) += holi-rumi-overlay.dtbo \
+	holi-mtp-overlay.dtbo \
+	holi-cdp-overlay.dtbo \
+	holi-cdp-lcd-overlay.dtbo \
+	holi-qrd-overlay.dtbo \
+	holi-atp-overlay.dtbo \
+	holi-mtp-usbc-overlay.dtbo
 
-sm8150-cdp-overlay.dtbo-base := sm8150.dtb sm8150-v2.dtb sm8150p.dtb sm8150p-v2.dtb
-sa8155-adp-star-overlay.dtbo-base := sa8155.dtb sa8155-v2.dtb
-sa8155p-adp-star-overlay.dtbo-base := sa8155p.dtb sa8155p-v2.dtb
-sa8155-v2-adp-air-overlay.dtbo-base := sa8155.dtb sa8155-v2.dtb
-sa8155p-v2-adp-air-overlay.dtbo-base := sa8155p.dtb sa8155p-v2.dtb
+holi-rumi-overlay.dtbo-base := holi.dtb
+holi-mtp-overlay.dtbo-base := holi.dtb
+holi-cdp-overlay.dtbo-base := holi.dtb
+holi-cdp-lcd-overlay.dtbo-base := holi.dtb
+holi-qrd-overlay.dtbo-base := holi.dtb
+holi-atp-overlay.dtbo-base := holi.dtb
+holi-mtp-usbc-overlay.dtbo-base := holi.dtb
 else
-dtb-$(CONFIG_ARCH_SM8150)       += sm8150-cdp.dtb \
-        sa8155-adp-star.dtb \
-        sa8155p-adp-star.dtb \
-        sa8155-v2-adp-star.dtb \
-        sa8155p-v2-adp-star.dtb \
-        sa8155-v2-adp-air.dtb \
-        sa8155p-v2-adp-air.dtb
-endif
-endif
-
-ifeq ($(CONFIG_ARCH_LAHAINA), y)
-ifeq ($(CONFIG_ARCH_QTI_VM), y)
-dtb-$(CONFIG_ARCH_QTI_VM) += lahaina-vm-mtp.dtb \
-	lahaina-vm-cdp.dtb \
-	lahaina-vm-qrd.dtb
-endif
-endif
-
-ifeq ($(CONFIG_ARCH_WAIPIO), y)
-ifeq ($(CONFIG_ARCH_QTI_VM), y)
-dtb-$(CONFIG_ARCH_QTI_VM) += waipio-vm-mtp.dtb \
-	waipio-vm-cdp.dtb \
-	waipio-vm-qrd.dtb \
-        waipio-vm-rumi.dtb \
-	waipio-lte-vm-mtp.dtb \
-	waipio-lte-vm-cdp.dtb \
-	waipio-lte-vm-qrd.dtb
-endif
+dtb-$(CONFIG_ARCH_HOLI) += holi-rumi.dtb \
+	holi-mtp.dtb \
+	holi-cdp.dtb \
+	holi-cdp-lcd.dtb \
+	holi-qrd.dtb \
+	holi-atp.dtb \
+	holi-mtp-usbc.dtb
 endif
 
 always-y	:= $(dtb-y)
