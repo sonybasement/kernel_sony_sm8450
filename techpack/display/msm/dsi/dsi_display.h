@@ -831,4 +831,8 @@ int dsi_display_restore_bit_clk(struct dsi_display *display, struct dsi_display_
 bool dsi_display_mode_match(const struct dsi_display_mode *mode1,
 		struct dsi_display_mode *mode2, unsigned int match_flags);
 
+#ifdef CONFIG_DRM_SDE_SPECIFIC_PANEL
+struct dsi_display *dsi_display_get_main_display(void);
+#endif /* CONFIG_DRM_SDE_SPECIFIC_PANEL */
+
 #endif /* _DSI_DISPLAY_H_ */

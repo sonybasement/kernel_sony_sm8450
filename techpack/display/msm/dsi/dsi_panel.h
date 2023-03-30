@@ -41,6 +41,11 @@
 #define MIPI_DSI_MSG_BATCH_COMMAND BIT(6)
 #define MIPI_DSI_MSG_UNICAST_COMMAND BIT(7)
 
+#ifdef CONFIG_DRM_SDE_SPECIFIC_PANEL
+#define SDE_PINCTRL_STATE_TOUCH_ACTIVE "somc_ts_int_active"
+#define SDE_PINCTRL_STATE_TOUCH_SUSPEND  "somc_ts_int_suspend"
+#endif /* CONFIG_DRM_SDE_SPECIFIC_PANEL */
+
 enum dsi_panel_rotation {
 	DSI_PANEL_ROTATE_NONE = 0,
 	DSI_PANEL_ROTATE_HV_FLIP,
@@ -113,6 +118,10 @@ struct dsi_pinctrl_info {
 	struct pinctrl_state *active;
 	struct pinctrl_state *suspend;
 	struct pinctrl_state *pwm_pin;
+#ifdef CONFIG_DRM_SDE_SPECIFIC_PANEL
+	struct pinctrl_state *touch_state_active;
+	struct pinctrl_state *touch_state_suspend;
+#endif /* CONFIG_DRM_SDE_SPECIFIC_PANEL */
 };
 
 struct dsi_panel_phy_props {
@@ -130,6 +139,9 @@ struct dsi_backlight_config {
 	u32 brightness_max_level;
 	/* current brightness value */
 	u32 brightness;
+#ifdef CONFIG_DRM_SDE_SPECIFIC_PANEL
+	u32 default_brightness_level;
+#endif /* CONFIG_DRM_SDE_SPECIFIC_PANEL */
 	u32 bl_level;
 	u32 bl_scale;
 	u32 bl_scale_sv;
@@ -272,6 +284,10 @@ struct dsi_panel {
 	enum dsi_panel_physical_type panel_type;
 
 	struct dsi_panel_ops panel_ops;
+
+#ifdef CONFIG_DRM_SDE_SPECIFIC_PANEL
+	struct panel_specific_pdata *spec_pdata;
+#endif /* CONFIG_DRM_SDE_SPECIFIC_PANEL */
 };
 
 static inline bool dsi_panel_ulps_feature_enabled(struct dsi_panel *panel)
@@ -340,6 +356,16 @@ int dsi_panel_set_lp1(struct dsi_panel *panel);
 int dsi_panel_set_lp2(struct dsi_panel *panel);
 
 int dsi_panel_set_nolp(struct dsi_panel *panel);
+
+#ifdef CONFIG_DRM_SDE_SPECIFIC_PANEL
+int dsi_panel_set_hbm_mode(struct dsi_panel *panel, int mode);
+
+int dsi_panel_set_hbm_mode_core(struct dsi_panel *panel, int mode);
+
+int dsi_panel_set_flm2_mode(struct dsi_panel *panel, int mode);
+
+int dsi_panel_set_hmd_mode(struct dsi_panel *panel, int mode);
+#endif /* CONFIG_DRM_SDE_SPECIFIC_PANEL */
 
 int dsi_panel_prepare(struct dsi_panel *panel);
 
