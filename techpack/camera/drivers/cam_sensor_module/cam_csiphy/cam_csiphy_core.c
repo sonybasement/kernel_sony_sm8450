@@ -85,7 +85,9 @@ static void cam_csiphy_reset_phyconfig_param(struct csiphy_device *csiphy_dev,
 	csiphy_dev->csiphy_info[index].settle_time = 0;
 	csiphy_dev->csiphy_info[index].data_rate = 0;
 	csiphy_dev->csiphy_info[index].secure_mode = 0;
+	csiphy_dev->csiphy_info[index].mipi_flags = 0;
 	csiphy_dev->csiphy_info[index].hdl_data.device_hdl = -1;
+	csiphy_dev->csiphy_info[index].csiphy_3phase = -1;
 }
 
 static inline void cam_csiphy_apply_onthego_reg_values(void __iomem *csiphybase, uint8_t csiphy_idx)
@@ -635,14 +637,12 @@ int32_t cam_cmd_buf_parser(struct csiphy_device *csiphy_dev,
 	 * preamble enable.
 	 */
 	if (csiphy_dev->preamble_enable && !preamble_en &&
-		csiphy_dev->csiphy_info[index].csiphy_3phase) {
+		csiphy_dev->combo_mode &&
+		!csiphy_dev->cphy_dphy_combo_mode) {
 		CAM_ERR(CAM_CSIPHY,
-			"Cannot support CPHY combo mode with differnt preamble settings");
-		return -EINVAL;
-	} else if (preamble_en &&
-		!csiphy_dev->csiphy_info[index].csiphy_3phase) {
-		CAM_ERR(CAM_CSIPHY,
-			"Preamble pattern enablement is not supported for DPHY sensors");
+			"Cannot support %s combo mode with differnt preamble settings",
+			(csiphy_dev->csiphy_info[index].csiphy_3phase ?
+			"CPHY" : "DPHY"));
 		return -EINVAL;
 	}
 
@@ -1256,6 +1256,11 @@ static int32_t cam_csiphy_external_cmd(struct csiphy_device *csiphy_dev,
 	struct cam_csiphy_info cam_cmd_csiphy_info;
 	int32_t rc = 0;
 	int32_t  index = -1;
+/* sony extension begin */
+	uint32_t lane_enable = 0;
+	uint16_t lane_assign = 0;
+	uint8_t lane_cnt = 0;
+/* sony extension end */
 
 	if (copy_from_user(&cam_cmd_csiphy_info,
 		u64_to_user_ptr(p_submit_cmd->packet_handle),
@@ -1284,6 +1289,55 @@ static int32_t cam_csiphy_external_cmd(struct csiphy_device *csiphy_dev,
 			__func__,
 			csiphy_dev->csiphy_info[index].settle_time,
 			csiphy_dev->csiphy_info[index].lane_cnt);
+/* sony extension begin */
+		csiphy_dev->csiphy_info[index].secure_mode =
+			cam_cmd_csiphy_info.secure_mode;
+		csiphy_dev->csiphy_info[index].mipi_flags =
+			cam_cmd_csiphy_info.mipi_flags;
+
+		lane_assign = csiphy_dev->csiphy_info[index].lane_assign;
+		lane_cnt = csiphy_dev->csiphy_info[index].lane_cnt;
+
+		while (lane_cnt--) {
+			rc = cam_csiphy_get_lane_enable(csiphy_dev, index,
+				(lane_assign & 0xF), &lane_enable);
+			if (rc) {
+				CAM_ERR(CAM_CSIPHY, "Wrong lane configuration: %d",
+					csiphy_dev->csiphy_info[index].lane_assign);
+				if ((csiphy_dev->combo_mode) ||
+					(csiphy_dev->cphy_dphy_combo_mode)) {
+					CAM_DBG(CAM_CSIPHY,
+						"Resetting error to zero for other devices to configure");
+					rc = 0;
+				}
+				lane_enable = 0;
+				csiphy_dev->csiphy_info[index].lane_enable = lane_enable;
+			}
+			csiphy_dev->csiphy_info[index].lane_enable |= lane_enable;
+			lane_assign >>= 4;
+		}
+
+		if (cam_cmd_csiphy_info.secure_mode == 1)
+			cam_csiphy_update_secure_info(csiphy_dev,
+				index);
+
+		CAM_DBG(CAM_CSIPHY,
+			"phy version:%d, phy_idx: %d",
+			csiphy_dev->hw_version,
+			csiphy_dev->soc_info.index);
+		CAM_DBG(CAM_CSIPHY,
+			"3phase:%d, combo mode:%d, secure mode:%d",
+			csiphy_dev->csiphy_info[index].csiphy_3phase,
+			csiphy_dev->combo_mode,
+			cam_cmd_csiphy_info.secure_mode);
+		CAM_DBG(CAM_CSIPHY,
+			"lane_cnt: 0x%x, lane_assign: 0x%x, lane_enable: 0x%x, settle time:%llu, datarate:%llu",
+			csiphy_dev->csiphy_info[index].lane_cnt,
+			csiphy_dev->csiphy_info[index].lane_assign,
+			csiphy_dev->csiphy_info[index].lane_enable,
+			csiphy_dev->csiphy_info[index].settle_time,
+			csiphy_dev->csiphy_info[index].data_rate);
+/* sony extension end */
 	}
 
 	return rc;
@@ -2087,6 +2141,7 @@ int32_t cam_csiphy_core_cfg(void *phy_dev,
 			CAM_SECURE_MODE_NON_SECURE;
 
 		csiphy_dev->csiphy_cpas_cp_reg_mask[offset] = 0x0;
+		csiphy_dev->preamble_enable = 0;
 
 		rc = cam_destroy_device_hdl(release.dev_handle);
 		if (rc < 0)

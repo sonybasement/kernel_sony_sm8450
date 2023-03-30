@@ -220,11 +220,23 @@ int cam_mem_mgr_init(void)
 	}
 #endif
 	bitmap_size = BITS_TO_LONGS(CAM_MEM_BUFQ_MAX) * sizeof(long);
+/* sony extension begin */
+#if 1
+	if (!tbl.bitmap) {
+		tbl.bitmap = kzalloc(bitmap_size, GFP_KERNEL);
+		if (!tbl.bitmap) {
+			rc = -ENOMEM;
+			goto put_heaps;
+		}
+	}
+#else
 	tbl.bitmap = kzalloc(bitmap_size, GFP_KERNEL);
 	if (!tbl.bitmap) {
 		rc = -ENOMEM;
 		goto put_heaps;
 	}
+#endif
+/* sony extension end */
 
 	tbl.bits = bitmap_size * BITS_PER_BYTE;
 	bitmap_zero(tbl.bitmap, tbl.bits);
@@ -1333,8 +1345,17 @@ void cam_mem_mgr_deinit(void)
 	debugfs_remove_recursive(tbl.dentry);
 	mutex_lock(&tbl.m_lock);
 	bitmap_zero(tbl.bitmap, tbl.bits);
+/* sony extension begin */
+#if 1
+	if (tbl.bitmap) {
+		kfree(tbl.bitmap);
+		tbl.bitmap = NULL;
+	}
+#else
 	kfree(tbl.bitmap);
 	tbl.bitmap = NULL;
+#endif
+/* sony extension end */
 	tbl.dbg_buf_idx = -1;
 	mutex_unlock(&tbl.m_lock);
 	mutex_destroy(&tbl.m_lock);
