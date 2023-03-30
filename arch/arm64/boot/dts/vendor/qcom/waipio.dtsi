@@ -3453,6 +3453,12 @@
 #include "msm-rdbg.dtsi"
 #include "waipio-gpu.dtsi"
 #include "waipio-thermal.dtsi"
+#include "../audio/waipio-audio.dtsi"
+#include "../audio/waipio-audio-qrd.dtsi"
+#include "../camera/waipio-camera.dtsi"
+#include "../display/waipio-sde.dtsi"
+#include "../mmrm/waipio-mmrm.dtsi"
+#include "../video/waipio-vidc.dtsi"
 
 &pcie0_rp {
 	#address-cells = <5>;

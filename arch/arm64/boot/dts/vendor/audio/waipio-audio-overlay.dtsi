@@ -149,12 +149,6 @@
 				<5 DSD_R 0x2>, <6 PCM_OUT1 0x01>;
 			qcom,swr-num-dev = <2>;
 			qcom,swr-clock-stop-mode0 = <1>;
-			swr_haptics: swr_haptics@f0170220 {
-				compatible = "qcom,pm8350b-swr-haptics";
-				reg = <0x01 0xf0170220>;
-				swr-slave-supply = <&hap_swr_slave_reg>;
-				qcom,rx_swr_ch_map = <0 0x01 0x01 0 PCM_OUT1>;
-			};
 
 			wcd938x_rx_slave: wcd938x-rx-slave {
 				compatible = "qcom,wcd938x-slave";
@@ -416,7 +410,7 @@
 		qcom,cdc-dmic23-gpios = <&cdc_dmic23_gpios>;
 		qcom,cdc-dmic45-gpios = <&cdc_dmic45_gpios>;
 		asoc-codec  = <&stub_codec>, <&lpass_cdc>,
-			      <&wcd938x_codec>, <&swr_haptics>,
+			      <&wcd938x_codec>,
 		      	<&wsa883x_0221>, <&wsa883x_0222>;
 		asoc-codec-names = "msm-stub-codec.1", "lpass-cdc",
 				   "wcd938x_codec", "swr-haptics",

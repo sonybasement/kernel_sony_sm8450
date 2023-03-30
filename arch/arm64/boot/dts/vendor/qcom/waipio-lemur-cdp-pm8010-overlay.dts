@@ -3,7 +3,6 @@
 
 #include "waipio-mtp.dtsi"
 #include "waipio-pm8010-spmi.dtsi"
-#include "sdxlemur-external-soc.dtsi"
 #include "waipio-lemur.dtsi"
 
 / {
