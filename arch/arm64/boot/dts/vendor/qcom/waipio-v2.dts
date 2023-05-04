@@ -2,6 +2,12 @@
 
 #include "waipio-v2.dtsi"
 
+#include "../audio/waipio-audio.dts"
+#include "../camera/waipio-camera.dts"
+#include "../display/waipio-sde.dts"
+#include "../mmrm/waipio-mmrm.dts"
+#include "../video/waipio-vidc.dts"
+
 / {
 	model = "Qualcomm Technologies, Inc. Waipio v2 SoC";
 	compatible = "qcom,waipio";

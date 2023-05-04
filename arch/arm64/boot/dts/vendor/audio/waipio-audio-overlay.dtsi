@@ -149,6 +149,12 @@
 				<5 DSD_R 0x2>, <6 PCM_OUT1 0x01>;
 			qcom,swr-num-dev = <2>;
 			qcom,swr-clock-stop-mode0 = <1>;
+			swr_haptics: swr_haptics@f0170220 {
+				compatible = "qcom,pm8350b-swr-haptics";
+				reg = <0x01 0xf0170220>;
+				swr-slave-supply = <&hap_swr_slave_reg>;
+				qcom,rx_swr_ch_map = <0 0x01 0x01 0 PCM_OUT1>;
+			};
 
 			wcd938x_rx_slave: wcd938x-rx-slave {
 				compatible = "qcom,wcd938x-slave";
@@ -409,8 +415,9 @@
 		qcom,cdc-dmic01-gpios = <&cdc_dmic01_gpios>;
 		qcom,cdc-dmic23-gpios = <&cdc_dmic23_gpios>;
 		qcom,cdc-dmic45-gpios = <&cdc_dmic45_gpios>;
+		qcom,cdc-dmic67-gpios = <&cdc_dmic67_gpios>;
 		asoc-codec  = <&stub_codec>, <&lpass_cdc>,
-			      <&wcd938x_codec>,
+			      <&wcd938x_codec>, <&swr_haptics>,
 		      	<&wsa883x_0221>, <&wsa883x_0222>;
 		asoc-codec-names = "msm-stub-codec.1", "lpass-cdc",
 				   "wcd938x_codec", "swr-haptics",
@@ -440,7 +447,6 @@
 		pinctrl-0 = <&wsa_swr_clk_active &wsa_swr_data_active>;
 		pinctrl-1 = <&wsa_swr_clk_sleep &wsa_swr_data_sleep>;
 		qcom,lpi-gpios;
-		qcom,tlmm-pins = <176>;
 		#gpio-cells = <0>;
 	};
 
@@ -450,7 +456,6 @@
 		pinctrl-0 = <&wsa2_swr_clk_active &wsa2_swr_data_active>;
 		pinctrl-1 = <&wsa2_swr_clk_sleep &wsa2_swr_data_sleep>;
 		qcom,lpi-gpios;
-		qcom,tlmm-pins = <181>;
 		#gpio-cells = <0>;
 	};
 
@@ -462,7 +467,6 @@
 		pinctrl-1 = <&rx_swr_clk_sleep &rx_swr_data_sleep
 				&rx_swr_data1_sleep>;
 		qcom,lpi-gpios;
-		qcom,tlmm-pins = <169>;
 		#gpio-cells = <0>;
 	};
 
@@ -474,7 +478,6 @@
 		pinctrl-1 = <&tx_swr_clk_sleep &tx_swr_data0_sleep
 			    &tx_swr_data1_sleep &tx_swr_data2_sleep>;
 		qcom,lpi-gpios;
-		qcom,tlmm-pins = <166>;
 		#gpio-cells = <0>;
 	};
 
@@ -484,7 +487,6 @@
 		pinctrl-0 = <&cdc_dmic01_clk_active &cdc_dmic01_data_active>;
 		pinctrl-1 = <&cdc_dmic01_clk_sleep &cdc_dmic01_data_sleep>;
 		qcom,lpi-gpios;
-		qcom,tlmm-pins = <171 172>;
 		#gpio-cells = <0>;
 	};
 
@@ -494,7 +496,6 @@
 		pinctrl-0 = <&cdc_dmic23_clk_active &cdc_dmic23_data_active>;
 		pinctrl-1 = <&cdc_dmic23_clk_sleep &cdc_dmic23_data_sleep>;
 		qcom,lpi-gpios;
-		qcom,tlmm-pins = <174>;
 		#gpio-cells = <0>;
 	};
 
@@ -504,7 +505,6 @@
 		pinctrl-0 = <&cdc_dmic45_clk_active &cdc_dmic45_data_active>;
 		pinctrl-1 = <&cdc_dmic45_clk_sleep &cdc_dmic45_data_sleep>;
 		qcom,lpi-gpios;
-		qcom,tlmm-pins = <177>;
 		#gpio-cells = <0>;
 	};
 
@@ -514,7 +514,6 @@
 		pinctrl-0 = <&cdc_dmic67_clk_active &cdc_dmic67_data_active>;
 		pinctrl-1 = <&cdc_dmic67_clk_sleep &cdc_dmic67_data_sleep>;
 		qcom,lpi-gpios;
-		qcom,tlmm-pins = <182>;
 		#gpio-cells = <0>;
 	};
 };

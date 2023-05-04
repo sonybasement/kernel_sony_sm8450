@@ -5,8 +5,6 @@
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator-levels.h>
 
-#include "../audio/somc-nagara-audio-common.dtsi"
-
 &soc {
 
 	somc_pinctrl: somc_pinctrl {

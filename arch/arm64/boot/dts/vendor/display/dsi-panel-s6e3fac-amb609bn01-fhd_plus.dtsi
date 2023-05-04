@@ -91,6 +91,7 @@
 				qcom,mdss-dsi-on-command-state = "dsi_lp_mode";
 				qcom,mdss-dsi-post-on-command-state = "dsi_lp_mode";
 				qcom,mdss-dsi-off-command-state = "dsi_hs_mode";
+				somc,aod-switch-enable;
 
 				qcom,compression-mode = "dsc";
 				qcom,mdss-dsc-slice-height = <40>;
@@ -162,6 +163,36 @@
 				qcom,mdss-dsi-off-command = [
 					05 01 00 00 00 00 01 28
 					05 01 00 00 78 00 01 10];
+				somc,mdss-dsi-timing-switch-command-aod = [
+					39 01 00 00 00 00 03 F0 5A 5A
+					39 01 00 00 00 00 04 B0 00 07 F2
+					39 01 00 00 00 00 07 F2 10 00 08 10 09 F8
+					39 01 00 00 00 00 04 B0 00 0C CB
+					39 01 00 00 00 00 02 CB 11
+					39 01 00 00 00 00 04 B0 00 20 CB
+					39 01 00 00 00 00 02 CB 11
+					39 01 00 00 00 00 04 B0 00 37 CB
+					39 01 00 00 00 00 02 CB 3F
+					39 01 00 00 00 00 04 B0 00 55 CB
+					39 01 00 00 00 00 02 CB 0B
+					39 01 00 00 00 00 04 B0 00 57 CB
+					39 01 00 00 00 00 02 CB 06
+					39 01 00 00 00 00 02 F7 0F
+					39 01 00 00 00 00 03 F0 A5 A5
+					39 01 00 00 00 00 03 F0 5A 5A
+					39 01 00 00 00 00 04 B0 01 28 98
+					39 01 00 00 00 00 03 98 00 50
+					39 01 00 00 00 00 02 F7 0F
+					39 01 00 00 00 00 03 F0 A5 A5
+					39 01 00 00 00 00 03 F0 5A 5A
+					39 01 00 00 00 00 04 B0 00 A5 98
+					39 01 00 00 00 00 07 98 01 7E 01 7E 01 7E
+					39 01 00 00 00 00 03 F0 A5 A5
+					39 01 00 00 00 00 03 F0 5A 5A
+					39 01 00 00 00 00 02 60 08
+					39 01 00 00 00 00 02 F7 0F
+					39 01 00 00 00 00 03 F0 A5 A5
+					05 01 00 00 00 00 01 29];
 				qcom,mdss-dsi-timing-switch-command = [
 					39 01 00 00 00 00 02 53 28
 					39 01 00 00 00 00 03 F0 5A 5A
@@ -193,6 +224,7 @@
 					39 01 00 00 00 00 02 F7 0F
 					39 01 00 00 00 00 03 F0 A5 A5
 					05 01 00 00 00 00 01 29];
+				somc,mdss-dsi-timing-switch-command-aod-state = "dsi_hs_mode";
 				qcom,mdss-dsi-timing-switch-command-state = "dsi_hs_mode";
 				somc,mdss-dsi-flm2-on-command = [
 					39 01 00 00 00 00 03 F0 5A 5A
