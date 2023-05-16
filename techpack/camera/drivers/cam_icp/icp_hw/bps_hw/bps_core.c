@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/of.h>
@@ -312,15 +313,15 @@ static int cam_bps_cmd_reset(struct cam_hw_soc_info *soc_info,
 			break;
 		retry_cnt++;
 	}
-	status = cam_io_r_mb(soc_info->reg_map[0].mem_base +
-		hw_info->cdm_irq_status);
-	if ((status & BPS_RST_DONE_IRQ_STATUS_BIT) != 0x1) {
+
+	if (retry_cnt == HFI_MAX_POLL_TRY) {
 		CAM_ERR(CAM_ICP, "BPS CDM rst failed status 0x%x", status);
 		reset_bps_cdm_fail = true;
 	}
 
 	/* Reset BPS core*/
 	status = 0;
+	retry_cnt = 0;
 	cam_io_w_mb((uint32_t)0x3,
 		soc_info->reg_map[0].mem_base + hw_info->top_rst_cmd);
 	while (retry_cnt < HFI_MAX_POLL_TRY) {
@@ -336,9 +337,8 @@ static int cam_bps_cmd_reset(struct cam_hw_soc_info *soc_info,
 			break;
 		retry_cnt++;
 	}
-	status = cam_io_r_mb(soc_info->reg_map[0].mem_base +
-		hw_info->top_irq_status);
-	if ((status & BPS_RST_DONE_IRQ_STATUS_BIT) != 0x1) {
+
+	if (retry_cnt == HFI_MAX_POLL_TRY) {
 		CAM_ERR(CAM_ICP, "BPS top rst failed status 0x%x", status);
 		reset_bps_top_fail = true;
 	}
@@ -354,6 +354,8 @@ static int cam_bps_cmd_reset(struct cam_hw_soc_info *soc_info,
 
 	if (reset_bps_cdm_fail || reset_bps_top_fail)
 		rc = -EAGAIN;
+	else
+		CAM_DBG(CAM_ICP, "BPS cdm and BPS top reset success");
 
 	return rc;
 }
@@ -475,6 +477,10 @@ int cam_bps_process_cmd(void *device_priv, uint32_t cmd_type,
 	case CAM_ICP_BPS_CMD_RESET:
 		rc = cam_bps_cmd_reset(soc_info, core_info);
 		break;
+	case CAM_ICP_BPS_CMD_DUMP_CLK: {
+		rc = cam_soc_util_dump_clk(soc_info);
+		break;
+	}
 	default:
 		CAM_ERR(CAM_ICP, "Invalid Cmd Type:%u", cmd_type);
 		rc = -EINVAL;

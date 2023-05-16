@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ *
  */
 
 #include <linux/uaccess.h>
@@ -123,6 +125,19 @@ static const char *cam_icp_dev_type_to_name(
 	default:
 		return "Invalid dev type";
 	}
+}
+
+static inline void cam_icp_dump_debug_info(bool skip_dump)
+{
+	struct cam_hw_intf *icp_dev_intf = icp_hw_mgr.icp_dev_intf;
+
+	if (skip_dump)
+		return;
+
+	cam_icp_mgr_process_dbg_buf(icp_hw_mgr.icp_dbg_lvl);
+	cam_hfi_queue_dump(false);
+	icp_dev_intf->hw_ops.process_cmd(
+		icp_dev_intf->hw_priv, CAM_ICP_CMD_HW_REG_DUMP, NULL, 0x0);
 }
 
 static int cam_icp_send_ubwc_cfg(struct cam_icp_hw_mgr *hw_mgr)
@@ -281,8 +296,12 @@ static int cam_icp_supported_clk_rates(struct cam_icp_hw_mgr *hw_mgr,
 	for (i = 0; i < CAM_MAX_VOTE; i++) {
 		ctx_data->clk_info.clk_rate[i] =
 			soc_info->clk_rate[i][soc_info->src_clk_idx];
-		CAM_DBG(CAM_PERF, "clk_info[%d] = %d",
-			i, ctx_data->clk_info.clk_rate[i]);
+
+		if (ctx_data->clk_info.clk_rate[i])
+			ctx_data->clk_info.max_supported_clk_level = i;
+		CAM_DBG(CAM_PERF, "dev_type: %d clk_info[%d] = %d max_supported_clk_level: %d",
+			ctx_data->icp_dev_acquire_info->dev_type, i, ctx_data->clk_info.clk_rate[i],
+			ctx_data->clk_info.max_supported_clk_level);
 	}
 
 	return 0;
@@ -1372,7 +1391,7 @@ static bool cam_icp_check_clk_update(struct cam_icp_hw_mgr *hw_mgr,
 	if (!ctx_data->clk_info.rt_flag &&
 		(ctx_data->icp_dev_acquire_info->dev_type !=
 		CAM_ICP_RES_TYPE_BPS))
-		base_clk = ctx_data->clk_info.clk_rate[CAM_MAX_VOTE-1];
+		base_clk = ctx_data->clk_info.clk_rate[ctx_data->clk_info.max_supported_clk_level];
 	else
 		base_clk = cam_icp_mgr_calc_base_clk(clk_info->frame_cycles,
 				clk_info->budget_ns);
@@ -1934,36 +1953,29 @@ static int cam_icp_hw_mgr_create_debugfs_entry(void)
 	/* Store parent inode for cleanup in caller */
 	icp_hw_mgr.dentry = dbgfileptr;
 
-	dbgfileptr = debugfs_create_bool("icp_pc", 0644, icp_hw_mgr.dentry,
+	debugfs_create_bool("icp_pc", 0644, icp_hw_mgr.dentry,
 		&icp_hw_mgr.icp_pc_flag);
 
-	dbgfileptr = debugfs_create_bool("ipe_bps_pc", 0644, icp_hw_mgr.dentry,
+	debugfs_create_bool("ipe_bps_pc", 0644, icp_hw_mgr.dentry,
 		&icp_hw_mgr.ipe_bps_pc_flag);
 
-	dbgfileptr = debugfs_create_file("icp_debug_clk", 0644,
+	debugfs_create_file("icp_debug_clk", 0644,
 		icp_hw_mgr.dentry, NULL, &cam_icp_debug_default_clk);
 
-	dbgfileptr = debugfs_create_bool("icp_jtag_debug", 0644,
+	debugfs_create_bool("icp_jtag_debug", 0644,
 		icp_hw_mgr.dentry, &icp_hw_mgr.icp_jtag_debug);
 
-	dbgfileptr = debugfs_create_file("icp_debug_type", 0644,
+	debugfs_create_file("icp_debug_type", 0644,
 		icp_hw_mgr.dentry, NULL, &cam_icp_debug_type_fs);
 
-	dbgfileptr = debugfs_create_file("icp_debug_lvl", 0644,
+	debugfs_create_file("icp_debug_lvl", 0644,
 		icp_hw_mgr.dentry, NULL, &cam_icp_debug_fs);
 
-	dbgfileptr = debugfs_create_file("icp_fw_dump_lvl", 0644,
+	debugfs_create_file("icp_fw_dump_lvl", 0644,
 		icp_hw_mgr.dentry, NULL, &cam_icp_debug_fw_dump);
 
-	dbgfileptr = debugfs_create_bool("disable_ubwc_comp", 0644,
+	debugfs_create_bool("disable_ubwc_comp", 0644,
 		icp_hw_mgr.dentry, &icp_hw_mgr.disable_ubwc_comp);
-
-	if (IS_ERR(dbgfileptr)) {
-		if (PTR_ERR(dbgfileptr) == -ENODEV)
-			CAM_WARN(CAM_ICP, "DebugFS not enabled in kernel!");
-		else
-			rc = PTR_ERR(dbgfileptr);
-	}
 end:
 	/* Set default hang dump lvl */
 	icp_hw_mgr.icp_fw_dump_lvl = HFI_FW_DUMP_ON_FAILURE;
@@ -2025,6 +2037,7 @@ static int cam_icp_mgr_cleanup_ctx(struct cam_icp_hw_ctx_data *ctx_data)
 		ctx_data->hfi_frame_process.in_free_resource[i] = 0;
 	}
 
+	ctx_data->abort_timed_out = false;
 	return 0;
 }
 
@@ -2092,9 +2105,39 @@ static const char *cam_icp_error_handle_id_to_type(
 	return name;
 }
 
+static int cam_icp_mgr_dump_clk(struct cam_icp_hw_ctx_data *ctx_data)
+{
+	uint32_t id, rc = 0;
+	uint32_t *cmd_args = NULL;
+	struct cam_hw_intf *ipe_dev_intf = NULL;
+	struct cam_hw_intf *bps_dev_intf = NULL;
+
+	ipe_dev_intf = icp_hw_mgr.ipe0_dev_intf;
+	bps_dev_intf = icp_hw_mgr.bps_dev_intf;
+
+	if ((!ipe_dev_intf) || (!bps_dev_intf)) {
+		CAM_ERR(CAM_ICP, "dev intfs are wrong, failed to dump clk");
+		return -EINVAL;
+	}
+
+	//dump bps clock
+	id = CAM_ICP_BPS_CMD_DUMP_CLK;
+	bps_dev_intf->hw_ops.process_cmd(
+		bps_dev_intf->hw_priv, id,
+		cmd_args, 0);
+
+	//dump ipe clock
+	id = CAM_ICP_IPE_CMD_DUMP_CLK;
+	ipe_dev_intf->hw_ops.process_cmd(
+		ipe_dev_intf->hw_priv, id,
+		cmd_args, 0);
+
+	return rc;
+}
+
 static int cam_icp_mgr_handle_frame_process(uint32_t *msg_ptr, int flag)
 {
-	int i;
+	int i, rc;
 	uint32_t idx;
 	uint64_t request_id;
 	struct cam_icp_hw_ctx_data *ctx_data = NULL;
@@ -2162,6 +2205,7 @@ static int cam_icp_mgr_handle_frame_process(uint32_t *msg_ptr, int flag)
 				ctx_data->icp_dev_acquire_info->dev_type,
 				request_id);
 			event_id = CAM_CTX_EVT_ID_ERROR;
+			rc = cam_icp_mgr_dump_clk(ctx_data);
 		}
 	} else {
 		event_id = CAM_CTX_EVT_ID_SUCCESS;
@@ -2486,6 +2530,7 @@ static int cam_icp_mgr_trigger_recovery(struct cam_icp_hw_mgr *hw_mgr)
 
 	sfr_buffer = (struct sfr_buf *)icp_hw_mgr.hfi_mem.sfr_buf.kva;
 	CAM_WARN(CAM_ICP, "SFR:%s", sfr_buffer->msg);
+	cam_icp_dump_debug_info(false);
 
 	cam_icp_mgr_ipe_bps_get_gdsc_control(hw_mgr);
 	cam_icp_ipebps_reset(hw_mgr);
@@ -2521,7 +2566,6 @@ static int cam_icp_mgr_process_fatal_error(
 			BUG();
 		}
 		rc = cam_icp_mgr_trigger_recovery(hw_mgr);
-		cam_icp_mgr_process_dbg_buf(icp_hw_mgr.icp_dbg_lvl);
 	}
 
 	return rc;
@@ -3508,6 +3552,7 @@ static int cam_icp_mgr_abort_handle_wq(
 	struct hfi_cmd_work_data   *task_data = NULL;
 	struct cam_icp_hw_ctx_data *ctx_data;
 	struct hfi_cmd_ipebps_async *abort_cmd;
+	struct hfi_cmd_abort        abort_data = {0};
 
 	if (!data || !priv) {
 		CAM_ERR(CAM_ICP, "Invalid params %pK %pK", data, priv);
@@ -3539,14 +3584,26 @@ static int cam_icp_mgr_abort_handle_wq(
 	abort_cmd->fw_handles[0] = ctx_data->fw_handle;
 	abort_cmd->user_data1 = PTR_TO_U64(ctx_data);
 	abort_cmd->user_data2 = (uint64_t)0x0;
+	// default abort_data.user_data
+	abort_data.user_data = 0;
+
+	if (task_data->request_id == 0) {
+		abort_data.abort.num_req_ids = 0;
+	} else {
+		abort_data.abort.num_req_ids = 1;
+		abort_data.abort.num_req_id[0] = task_data->request_id;
+	}
+	memcpy(abort_cmd->payload.direct, &abort_data,
+		sizeof(abort_data));
 
 	rc = hfi_write_cmd(abort_cmd);
 	if (rc) {
 		kfree(abort_cmd);
 		return rc;
 	}
-	CAM_DBG(CAM_ICP, "fw_handle = %x ctx_data = %pK ctx_id %d",
-		ctx_data->fw_handle, ctx_data, ctx_data->ctx_id);
+	CAM_DBG(CAM_ICP, "fw_handle = %x ctx_data = %pK ctx_id %d reqID %lld",
+		ctx_data->fw_handle, ctx_data, ctx_data->ctx_id,
+		task_data->request_id);
 
 	kfree(abort_cmd);
 	return rc;
@@ -3601,8 +3658,8 @@ static int cam_icp_mgr_abort_handle(
 			CAM_ERR(CAM_ICP,
 				"FW timeout/err in abort handle command ctx: %u",
 				ctx_data->ctx_id);
-			cam_icp_mgr_process_dbg_buf(icp_hw_mgr.icp_dbg_lvl);
-			cam_hfi_queue_dump();
+			cam_icp_dump_debug_info(false);
+			ctx_data->abort_timed_out = true;
 		}
 	}
 
@@ -3658,8 +3715,7 @@ static int cam_icp_mgr_destroy_handle(
 		rc = -ETIMEDOUT;
 		CAM_ERR(CAM_ICP, "FW response timeout: %d for %u",
 			rc, ctx_data->ctx_id);
-		cam_icp_mgr_process_dbg_buf(icp_hw_mgr.icp_dbg_lvl);
-		cam_hfi_queue_dump();
+		cam_icp_dump_debug_info(ctx_data->abort_timed_out);
 	}
 	kfree(destroy_cmd);
 	return rc;
@@ -4055,8 +4111,7 @@ static int cam_icp_mgr_send_fw_init(struct cam_icp_hw_mgr *hw_mgr)
 	if (!rem_jiffies || atomic_read(&hw_mgr->recovery)) {
 		rc = -ETIMEDOUT;
 		CAM_ERR(CAM_ICP, "FW response timed out %d", rc);
-		cam_icp_mgr_process_dbg_buf(icp_hw_mgr.icp_dbg_lvl);
-		cam_hfi_queue_dump();
+		cam_icp_dump_debug_info(false);
 	}
 	CAM_DBG(CAM_ICP, "Done Waiting for INIT DONE Message");
 
@@ -4340,8 +4395,7 @@ static int cam_icp_mgr_send_config_io(struct cam_icp_hw_ctx_data *ctx_data,
 			ctx_data->ctx_id, ctx_data->acquire_dev_cmd.dev_handle,
 			ctx_data->acquire_dev_cmd.session_handle,
 			ctx_data->icp_dev_acquire_info->dev_type);
-		cam_icp_mgr_process_dbg_buf(icp_hw_mgr.icp_dbg_lvl);
-		cam_hfi_queue_dump();
+		cam_icp_dump_debug_info(false);
 	}
 
 	return rc;
@@ -4544,13 +4598,13 @@ static int cam_icp_mgr_pkt_validation(struct cam_packet *packet)
 		return -EINVAL;
 	}
 
-	if (packet->num_io_configs > IPE_IO_IMAGES_MAX) {
+	if (!packet->num_io_configs || packet->num_io_configs > IPE_IO_IMAGES_MAX) {
 		CAM_ERR(CAM_ICP, "Invalid number of io configs: %d %d",
 			IPE_IO_IMAGES_MAX, packet->num_io_configs);
 		return -EINVAL;
 	}
 
-	if (packet->num_cmd_buf > CAM_ICP_CTX_MAX_CMD_BUFFERS) {
+	if (!packet->num_cmd_buf || packet->num_cmd_buf > CAM_ICP_CTX_MAX_CMD_BUFFERS) {
 		CAM_ERR(CAM_ICP, "Invalid number of cmd buffers: %d %d",
 			CAM_ICP_CTX_MAX_CMD_BUFFERS, packet->num_cmd_buf);
 		return -EINVAL;
@@ -4805,7 +4859,7 @@ static int cam_icp_process_stream_settings(
 	if (!rem_jiffies) {
 		rc = -ETIMEDOUT;
 		CAM_ERR(CAM_ICP, "FW response timed out %d", rc);
-		cam_hfi_queue_dump();
+		cam_icp_dump_debug_info(false);
 	}
 
 end:
@@ -5491,7 +5545,8 @@ static void cam_icp_mgr_flush_info_dump(
 }
 
 static int cam_icp_mgr_enqueue_abort(
-	struct cam_icp_hw_ctx_data *ctx_data)
+	struct cam_icp_hw_ctx_data *ctx_data,
+	struct cam_hw_flush_args *flush_args)
 {
 	int timeout = 1000, rc;
 	unsigned long rem_jiffies = 0;
@@ -5508,6 +5563,11 @@ static int cam_icp_mgr_enqueue_abort(
 	task_data = (struct hfi_cmd_work_data *)task->payload;
 	task_data->data = (void *)ctx_data;
 	task_data->type = ICP_WORKQ_TASK_CMD_TYPE;
+	task_data->request_id = 0;
+	if ((flush_args->flush_type == CAM_FLUSH_TYPE_REQ) &&
+		 (flush_args->num_req_active)) {
+		task_data->request_id = *(int32_t *)flush_args->flush_req_active[0];
+	}
 	task->process_cb = cam_icp_mgr_abort_handle_wq;
 	cam_req_mgr_workq_enqueue_task(task, &icp_hw_mgr,
 		CRM_TASK_PRIORITY_0);
@@ -5521,8 +5581,8 @@ static int cam_icp_mgr_enqueue_abort(
 			CAM_ERR(CAM_ICP,
 				"FW timeout/err in abort handle command ctx: %u",
 				ctx_data->ctx_id);
-			cam_icp_mgr_process_dbg_buf(icp_hw_mgr.icp_dbg_lvl);
-			cam_hfi_queue_dump();
+			cam_icp_dump_debug_info(false);
+			ctx_data->abort_timed_out = true;
 			return rc;
 		}
 	}
@@ -5676,7 +5736,7 @@ static int cam_icp_mgr_hw_flush(void *hw_priv, void *hw_flush_args)
 			mutex_unlock(&hw_mgr->hw_mgr_mutex);
 			cam_icp_mgr_flush_info_dump(flush_args,
 				ctx_data->ctx_id);
-			cam_icp_mgr_enqueue_abort(ctx_data);
+			cam_icp_mgr_enqueue_abort(ctx_data, flush_args);
 		} else {
 			mutex_unlock(&hw_mgr->hw_mgr_mutex);
 		}
@@ -5685,12 +5745,14 @@ static int cam_icp_mgr_hw_flush(void *hw_priv, void *hw_flush_args)
 		mutex_unlock(&ctx_data->ctx_mutex);
 		break;
 	case CAM_FLUSH_TYPE_REQ:
-		mutex_lock(&ctx_data->ctx_mutex);
+		mutex_lock(&hw_mgr->hw_mgr_mutex);
 		if (flush_args->num_req_active) {
-			CAM_ERR(CAM_ICP, "Flush request is not supported");
-			mutex_unlock(&ctx_data->ctx_mutex);
-			return -EINVAL;
+			mutex_unlock(&hw_mgr->hw_mgr_mutex);
+			cam_icp_mgr_enqueue_abort(ctx_data, flush_args);
+		} else {
+			mutex_unlock(&hw_mgr->hw_mgr_mutex);
 		}
+		mutex_lock(&ctx_data->ctx_mutex);
 		if (flush_args->num_req_pending)
 			cam_icp_mgr_flush_req(ctx_data, flush_args);
 		mutex_unlock(&ctx_data->ctx_mutex);
@@ -5756,10 +5818,10 @@ static int cam_icp_mgr_release_hw(void *hw_mgr_priv, void *release_hw_args)
 		cam_icp_hw_mgr_reset_clk_info(hw_mgr);
 		rc = cam_ipe_bps_deint(hw_mgr);
 	}
-	mutex_unlock(&hw_mgr->hw_mgr_mutex);
 
 	if ((!hw_mgr->bps_ctxt_cnt || !hw_mgr->ipe_ctxt_cnt))
 		cam_icp_device_timer_stop(hw_mgr);
+	mutex_unlock(&hw_mgr->hw_mgr_mutex);
 
 	CAM_DBG(CAM_ICP, "Release done for ctx_id %d", ctx_id);
 	return rc;
@@ -5800,8 +5862,7 @@ static int cam_icp_mgr_create_handle(uint32_t dev_type,
 	if (!rem_jiffies) {
 		rc = -ETIMEDOUT;
 		CAM_ERR(CAM_ICP, "FW response timed out %d", rc);
-		cam_icp_mgr_process_dbg_buf(icp_hw_mgr.icp_dbg_lvl);
-		cam_hfi_queue_dump();
+		cam_icp_dump_debug_info(false);
 	}
 
 	if (ctx_data->fw_handle == 0) {
@@ -5848,8 +5909,7 @@ static int cam_icp_mgr_send_ping(struct cam_icp_hw_ctx_data *ctx_data)
 	if (!rem_jiffies) {
 		rc = -ETIMEDOUT;
 		CAM_ERR(CAM_ICP, "FW response timed out %d", rc);
-		cam_icp_mgr_process_dbg_buf(icp_hw_mgr.icp_dbg_lvl);
-		cam_hfi_queue_dump();
+		cam_icp_dump_debug_info(false);
 	}
 
 	return rc;
@@ -6567,7 +6627,10 @@ int cam_icp_hw_mgr_init(struct device_node *of_node, uint64_t *hw_mgr_hdl,
 		(camera_hw_version == CAM_CPAS_TITAN_570_V100) ||
 		(camera_hw_version == CAM_CPAS_TITAN_570_V200) ||
 		(camera_hw_version == CAM_CPAS_TITAN_680_V100) ||
-		(camera_hw_version == CAM_CPAS_TITAN_780_V100)) {
+		(camera_hw_version == CAM_CPAS_TITAN_680_V110) ||
+		(camera_hw_version == CAM_CPAS_TITAN_780_V100) ||
+		(camera_hw_version == CAM_CPAS_TITAN_640_V200) ||
+		(camera_hw_version == CAM_CPAS_TITAN_640_V210)) {
 		if (cam_caps & CPAS_TITAN_IPE0_CAP_BIT)
 			icp_hw_mgr.ipe0_enable = true;
 		if (cam_caps & CPAS_BPS_BIT)

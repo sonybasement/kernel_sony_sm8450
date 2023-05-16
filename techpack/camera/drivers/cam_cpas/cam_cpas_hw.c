@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/device.h>
@@ -130,8 +131,8 @@ int cam_cpas_util_reg_update(struct cam_hw_info *cpas_hw,
 		value = reg_info->value;
 	}
 
-	CAM_DBG(CAM_CPAS, "Base[%d] Offset[0x%08x] Value[0x%08x]",
-		reg_base, reg_info->offset, value);
+	CAM_DBG(CAM_CPAS, "Base[%d]:[0x%08x] Offset[0x%08x] Value[0x%08x]",
+		reg_base, soc_info->reg_map[reg_base_index].mem_base, reg_info->offset, value);
 
 	cam_io_w_mb(value, soc_info->reg_map[reg_base_index].mem_base +
 		reg_info->offset);
@@ -1312,6 +1313,7 @@ static int cam_cpas_util_apply_default_axi_vote(
 	struct cam_cpas *cpas_core = (struct cam_cpas *) cpas_hw->core_info;
 	struct cam_cpas_axi_port *axi_port = NULL;
 	uint64_t mnoc_ab_bw = 0, mnoc_ib_bw = 0;
+	uint64_t applied_ab_bw = 0, applied_ib_bw = 0;
 	int rc = 0, i = 0;
 
 	mutex_lock(&cpas_core->tree_lock);
@@ -1339,6 +1341,8 @@ static int cam_cpas_util_apply_default_axi_vote(
 				mnoc_ab_bw, mnoc_ib_bw, rc);
 			goto unlock_tree;
 		}
+		cpas_core->axi_port[i].applied_ab_bw = applied_ab_bw;
+		cpas_core->axi_port[i].applied_ib_bw = applied_ib_bw;
 	}
 
 unlock_tree:
@@ -2516,6 +2520,32 @@ done:
 	return rc;
 }
 
+static int cam_cpas_hw_enable_tpg_mux_sel(struct cam_hw_info *cpas_hw,
+	uint32_t tpg_mux)
+{
+	struct cam_cpas *cpas_core = (struct cam_cpas *) cpas_hw->core_info;
+	int rc = 0;
+
+	mutex_lock(&cpas_hw->hw_mutex);
+
+	if (cpas_core->internal_ops.set_tpg_mux_sel) {
+		rc = cpas_core->internal_ops.set_tpg_mux_sel(
+			cpas_hw, tpg_mux);
+		if (rc) {
+			CAM_ERR(CAM_CPAS,
+				"failed in tpg mux selection rc=%d",
+				rc);
+		}
+	} else {
+		CAM_ERR(CAM_CPAS,
+			"CPAS tpg mux sel not enabled");
+		rc = -EINVAL;
+	}
+
+	mutex_unlock(&cpas_hw->hw_mutex);
+	return rc;
+}
+
 static int cam_cpas_activate_cache(
 	struct cam_hw_info *cpas_hw,
 	struct cam_sys_cache_info *cache_info)
@@ -2845,6 +2875,19 @@ static int cam_cpas_hw_process_cmd(void *hw_priv,
 			*client_handle);
 		break;
 	}
+	case CAM_CPAS_HW_CMD_TPG_MUX_SEL: {
+		uint32_t *tpg_mux_sel;
+
+		if (sizeof(uint32_t) != arg_size) {
+			CAM_ERR(CAM_CPAS, "cmd_type %d, size mismatch %d",
+				cmd_type, arg_size);
+			break;
+		}
+
+		tpg_mux_sel = (uint32_t *)cmd_args;
+		rc = cam_cpas_hw_enable_tpg_mux_sel(hw_priv, *tpg_mux_sel);
+		break;
+	}
 	default:
 		CAM_ERR(CAM_CPAS, "CPAS HW command not valid =%d", cmd_type);
 		break;
@@ -2925,21 +2968,14 @@ static int cam_cpas_util_create_debugfs(struct cam_cpas *cpas_core)
 	/* Store parent inode for cleanup in caller */
 	cpas_core->dentry = dbgfileptr;
 
-	dbgfileptr = debugfs_create_bool("ahb_bus_scaling_disable", 0644,
+	debugfs_create_bool("ahb_bus_scaling_disable", 0644,
 		cpas_core->dentry, &cpas_core->ahb_bus_scaling_disable);
 
-	dbgfileptr = debugfs_create_bool("full_state_dump", 0644,
+	debugfs_create_bool("full_state_dump", 0644,
 		cpas_core->dentry, &cpas_core->full_state_dump);
 
-	dbgfileptr = debugfs_create_bool("smart_qos_dump", 0644,
+	debugfs_create_bool("smart_qos_dump", 0644,
 		cpas_core->dentry, &cpas_core->smart_qos_dump);
-
-	if (IS_ERR(dbgfileptr)) {
-		if (PTR_ERR(dbgfileptr) == -ENODEV)
-			CAM_WARN(CAM_CPAS, "DebugFS not enabled in kernel!");
-		else
-			rc = PTR_ERR(dbgfileptr);
-	}
 end:
 	return rc;
 }

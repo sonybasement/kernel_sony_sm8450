@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _CAM_ISP_HW_MGR_INTF_H_
@@ -13,15 +14,18 @@
 #include "cam_hw_mgr_intf.h"
 
 /* MAX IFE instance */
-#define CAM_IFE_HW_NUM_MAX      8
-#define CAM_SFE_HW_NUM_MAX      2
-#define CAM_IFE_RDI_NUM_MAX     4
-#define CAM_SFE_RDI_NUM_MAX     5
-#define CAM_SFE_FE_RDI_NUM_MAX  3
-#define CAM_ISP_BW_CONFIG_V1    1
-#define CAM_ISP_BW_CONFIG_V2    2
-#define CAM_TFE_HW_NUM_MAX      3
-#define CAM_TFE_RDI_NUM_MAX     3
+#define CAM_IFE_HW_NUM_MAX       8
+#define CAM_SFE_HW_NUM_MAX       2
+#define CAM_IFE_RDI_NUM_MAX      4
+#define CAM_SFE_RDI_NUM_MAX      5
+#define CAM_SFE_FE_RDI_NUM_MAX   3
+#define CAM_ISP_BW_CONFIG_V1     1
+#define CAM_ISP_BW_CONFIG_V2     2
+#define CAM_TFE_HW_NUM_MAX       3
+#define CAM_TFE_RDI_NUM_MAX      3
+#define CAM_IFE_SCRATCH_NUM_MAX  2
+#define CAM_ISP_BUS_COMP_NUM_MAX 18
+#define CAM_SFE_BUS_COMP_NUM_MAX 12
 
 /* maximum context numbers for TFE */
 #define CAM_TFE_CTX_MAX      4
@@ -68,6 +72,30 @@ enum cam_isp_hw_event_type {
 };
 
 /**
+ * cam_isp_hw_evt_type_to_string() - convert cam_isp_hw_event_type to string for printing logs
+ */
+static inline const char *cam_isp_hw_evt_type_to_string(
+	enum cam_isp_hw_event_type evt_type)
+{
+	switch (evt_type) {
+	case CAM_ISP_HW_EVENT_ERROR:
+		return "ERROR";
+	case CAM_ISP_HW_EVENT_SOF:
+		return "SOF";
+	case CAM_ISP_HW_EVENT_REG_UPDATE:
+		return "REG_UPDATE";
+	case CAM_ISP_HW_EVENT_EPOCH:
+		return "EPOCH";
+	case CAM_ISP_HW_EVENT_EOF:
+		return "EOF";
+	case CAM_ISP_HW_EVENT_DONE:
+		return "BUF_DONE";
+	default:
+		return "INVALID_EVT";
+	}
+}
+
+/**
  *  enum cam_isp_hw_secondary-event_type - Collection of the ISP hardware secondary events
  */
 enum cam_isp_hw_secondary_event_type {
@@ -82,16 +110,23 @@ enum cam_isp_hw_secondary_event_type {
  *                         ISP hardware event CAM_ISP_HW_EVENT_ERROR
  */
 enum cam_isp_hw_err_type {
-	CAM_ISP_HW_ERROR_NONE = 0x0001,
-	CAM_ISP_HW_ERROR_OVERFLOW = 0x0002,
-	CAM_ISP_HW_ERROR_P2I_ERROR = 0x0004,
-	CAM_ISP_HW_ERROR_VIOLATION = 0x0008,
-	CAM_ISP_HW_ERROR_BUSIF_OVERFLOW = 0x0010,
-	CAM_ISP_HW_ERROR_CSID_FATAL = 0x0020,
-	CAM_ISP_HW_ERROR_CSID_FIFO_OVERFLOW = 0x0040,
-	CAM_ISP_HW_ERROR_RECOVERY_OVERFLOW = 0x0080,
-	CAM_ISP_HW_ERROR_CSID_FRAME_SIZE = 0x0100,
-	CAM_ISP_HW_ERROR_CSID_SENSOR_FRAME_DROP = 0x0200,
+	CAM_ISP_HW_ERROR_NONE                         = 0x00000001,
+	CAM_ISP_HW_ERROR_OVERFLOW                     = 0x00000002,
+	CAM_ISP_HW_ERROR_P2I_ERROR                    = 0x00000004,
+	CAM_ISP_HW_ERROR_VIOLATION                    = 0x00000008,
+	CAM_ISP_HW_ERROR_BUSIF_OVERFLOW               = 0x00000010,
+	CAM_ISP_HW_ERROR_CSID_FATAL                   = 0x00000020,
+	CAM_ISP_HW_ERROR_CSID_OUTPUT_FIFO_OVERFLOW    = 0x00000040,
+	CAM_ISP_HW_ERROR_RECOVERY_OVERFLOW            = 0x00000080,
+	CAM_ISP_HW_ERROR_CSID_FRAME_SIZE              = 0x00000100,
+	CAM_ISP_HW_ERROR_CSID_LANE_FIFO_OVERFLOW      = 0x00000200,
+	CAM_ISP_HW_ERROR_CSID_PKT_HDR_CORRUPTED       = 0x00000400,
+	CAM_ISP_HW_ERROR_CSID_MISSING_PKT_HDR_DATA    = 0x00000800,
+	CAM_ISP_HW_ERROR_CSID_SENSOR_SWITCH_ERROR     = 0x00001000,
+	CAM_ISP_HW_ERROR_CSID_UNBOUNDED_FRAME         = 0x00002000,
+	CAM_ISP_HW_ERROR_CSID_SENSOR_FRAME_DROP       = 0x00004000,
+	CAM_ISP_HW_ERROR_CSID_MISSING_EOT             = 0x00008000,
+	CAM_ISP_HW_ERROR_CSID_PKT_PAYLOAD_CORRUPTED   = 0x00010000,
 };
 
 /**
@@ -205,9 +240,10 @@ struct cam_isp_bw_clk_config_info {
  * @bw_clk_config:          BW and clock config info
  * @reg_dump_buf_desc:     cmd buffer descriptors for reg dump
  * @num_reg_dump_buf:      Count of descriptors in reg_dump_buf_desc
- * @packet                 CSL packet from user mode driver
+ * @packet:                CSL packet from user mode driver
  * @mup_val:               MUP value if configured
- * @mup_en                 Flag if dynamic sensor switch is enabled
+ * @num_exp:               Num of exposures
+ * @mup_en:                Flag if dynamic sensor switch is enabled
  *
  */
 struct cam_isp_prepare_hw_update_data {
@@ -222,9 +258,38 @@ struct cam_isp_prepare_hw_update_data {
 	uint32_t                              num_reg_dump_buf;
 	struct cam_packet                    *packet;
 	uint32_t                              mup_val;
+	uint32_t                              num_exp;
 	bool                                  mup_en;
 };
 
+/**
+ * struct cam_isp_hw_comp_record:
+ *
+ * @brief:              Structure record the res id reserved on a comp group
+ *
+ * @num_res:            Number of valid resource IDs in this record
+ * @res_id:             Resource IDs to report buf dones
+ * @last_consumed_addr: Last consumed addr for resource ID at that index
+ *
+ */
+struct cam_isp_hw_comp_record {
+	uint32_t num_res;
+	uint32_t res_id[CAM_NUM_OUT_PER_COMP_IRQ_MAX];
+};
+
+/**
+ * struct cam_isp_comp_record_query:
+ *
+ * @brief:              Structure record the bus comp group pointer information
+ *
+ * @isp_bus_comp_grp:   Vfe/Tfe bus comp group pointer
+ * @sfe_bus_comp_grp:   Sfe bus comp group pointer
+ *
+ */
+struct cam_isp_comp_record_query {
+	struct cam_isp_hw_comp_record        *isp_bus_comp_grp;
+	struct cam_isp_hw_comp_record        *sfe_bus_comp_grp;
+};
 
 /**
  * struct cam_isp_hw_sof_event_data - Event payload for CAM_HW_EVENT_SOF
@@ -263,19 +328,19 @@ struct cam_isp_hw_epoch_event_data {
 /**
  * struct cam_isp_hw_done_event_data - Event payload for CAM_HW_EVENT_DONE
  *
- * @num_handles:           Number of resource handeles
- * @resource_handle:       Resource handle array
- * @last_consumed_addr:    Last consumed addr
- * @timestamp:             Timestamp for the buf done event
+ * @hw_type:             Hw type sending the event
+ * @resource_handle:     Resource handle
+ * @comp_group_id:       Bus comp group id
+ * @last_consumed_addr:  Last consumed addr
+ * @timestamp:           Timestamp for the buf done event
  *
  */
 struct cam_isp_hw_done_event_data {
-	uint32_t             num_handles;
-	uint32_t             resource_handle[
-				CAM_NUM_OUT_PER_COMP_IRQ_MAX];
-	uint32_t             last_consumed_addr[
-				CAM_NUM_OUT_PER_COMP_IRQ_MAX];
-	uint64_t       timestamp;
+	uint32_t             hw_type;
+	uint32_t             resource_handle;
+	uint32_t             comp_group_id;
+	uint32_t             last_consumed_addr;
+	uint64_t             timestamp;
 };
 
 /**
@@ -326,6 +391,10 @@ enum cam_isp_hw_mgr_command {
 	CAM_ISP_HW_MGR_GET_PACKET_OPCODE,
 	CAM_ISP_HW_MGR_GET_LAST_CDM_DONE,
 	CAM_ISP_HW_MGR_CMD_PROG_DEFAULT_CFG,
+	CAM_ISP_HW_MGR_GET_SOF_TS,
+	CAM_ISP_HW_MGR_DUMP_STREAM_INFO,
+	CAM_ISP_HW_MGR_CMD_UPDATE_CLOCK,
+	CAM_ISP_HW_MGR_GET_BUS_COMP_GROUP,
 	CAM_ISP_HW_MGR_CMD_MAX,
 };
 
@@ -345,6 +414,7 @@ enum cam_isp_ctx_type {
  * @ctx_type:              RDI_ONLY, PIX and RDI, or FS2
  * @packet_op_code:        Packet opcode
  * @last_cdm_done:         Last cdm done request
+ * @sof_ts:                SOF timestamps (current, boot and previous)
  */
 struct cam_isp_hw_cmd_args {
 	uint32_t                          cmd_type;
@@ -354,6 +424,11 @@ struct cam_isp_hw_cmd_args {
 		uint32_t                      ctx_type;
 		uint32_t                      packet_op_code;
 		uint64_t                      last_cdm_done;
+		struct {
+			uint64_t                      curr;
+			uint64_t                      prev;
+			uint64_t                      boot;
+		} sof_ts;
 	} u;
 };
 

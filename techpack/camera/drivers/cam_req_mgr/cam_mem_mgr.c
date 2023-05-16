@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -23,6 +24,7 @@
 #include "cam_trace.h"
 #include "cam_common_util.h"
 #include "cam_presil_hw_access.h"
+#include "cam_compat.h"
 
 #define CAM_MEM_SHARED_BUFFER_PAD_4K (4 * 1024)
 
@@ -37,13 +39,13 @@ static int cam_mem_mgr_get_dma_heaps(void);
 #ifdef CONFIG_CAM_PRESIL
 static inline void cam_mem_mgr_reset_presil_params(int idx)
 {
-        tbl.bufq[idx].presil_params.fd_for_umd_daemon = -1;
-        tbl.bufq[idx].presil_params.refcount = 0;
+	tbl.bufq[idx].presil_params.fd_for_umd_daemon = -1;
+	tbl.bufq[idx].presil_params.refcount = 0;
 }
 #else
 static inline void cam_mem_mgr_reset_presil_params(int idx)
 {
-        return;
+	return;
 }
 #endif
 
@@ -109,12 +111,9 @@ static int cam_mem_util_get_dma_dir(uint32_t flags)
 	return rc;
 }
 
-static int cam_mem_util_map_cpu_va(struct dma_buf *dmabuf,
-	uintptr_t *vaddr,
-	size_t *len)
+static int cam_mem_util_map_cpu_va(struct dma_buf *dmabuf, uintptr_t *vaddr, size_t *len)
 {
 	int rc = 0;
-	void *addr;
 
 	/*
 	 * dma_buf_begin_cpu_access() and dma_buf_end_cpu_access()
@@ -126,24 +125,20 @@ static int cam_mem_util_map_cpu_va(struct dma_buf *dmabuf,
 		return rc;
 	}
 
-	addr = dma_buf_vmap(dmabuf);
-	if (!addr) {
-		CAM_ERR(CAM_MEM, "kernel map fail");
-		*vaddr = 0;
+	rc = cam_compat_util_get_dmabuf_va(dmabuf, vaddr);
+	if (rc) {
+		CAM_ERR(CAM_MEM, "kernel vmap failed: rc = %d", rc);
 		*len = 0;
-		rc = -ENOSPC;
-		goto fail;
+		dma_buf_end_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
+	}
+	else {
+		*len = dmabuf->size;
+		CAM_DBG(CAM_MEM, "vaddr = %llu, len = %zu", *vaddr, *len);
 	}
 
-	*vaddr = (uint64_t)addr;
-	*len = dmabuf->size;
-
-	return 0;
-
-fail:
-	dma_buf_end_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
 	return rc;
 }
+
 static int cam_mem_util_unmap_cpu_va(struct dma_buf *dmabuf,
 	uint64_t vaddr)
 {
@@ -154,7 +149,7 @@ static int cam_mem_util_unmap_cpu_va(struct dma_buf *dmabuf,
 		return -EINVAL;
 	}
 
-	dma_buf_vunmap(dmabuf, (void *)vaddr);
+	cam_compat_util_put_dmabuf_va(dmabuf, (void *)vaddr);
 
 	/*
 	 * dma_buf_begin_cpu_access() and
@@ -185,14 +180,8 @@ static int cam_mem_mgr_create_debug_fs(void)
 	/* Store parent inode for cleanup in caller */
 	tbl.dentry = dbgfileptr;
 
-	dbgfileptr = debugfs_create_bool("alloc_profile_enable", 0644,
+	debugfs_create_bool("alloc_profile_enable", 0644,
 		tbl.dentry, &tbl.alloc_profile_enable);
-	if (IS_ERR(dbgfileptr)) {
-		if (PTR_ERR(dbgfileptr) == -ENODEV)
-			CAM_WARN(CAM_MEM, "DebugFS not enabled in kernel!");
-		else
-			rc = PTR_ERR(dbgfileptr);
-	}
 end:
 	return rc;
 }
@@ -409,14 +398,17 @@ int cam_mem_mgr_cache_ops(struct cam_mem_cache_ops_cmd *cmd)
 	if (idx >= CAM_MEM_BUFQ_MAX || idx <= 0)
 		return -EINVAL;
 
-	mutex_lock(&tbl.bufq[idx].q_lock);
+	mutex_lock(&tbl.m_lock);
 
-	if (!tbl.bufq[idx].active) {
+	if (!test_bit(idx, tbl.bitmap)) {
 		CAM_ERR(CAM_MEM, "Buffer at idx=%d is already unmapped,",
 			idx);
-		rc = -EINVAL;
-		goto end;
+		mutex_unlock(&tbl.m_lock);
+		return -EINVAL;
 	}
+
+	mutex_lock(&tbl.bufq[idx].q_lock);
+	mutex_unlock(&tbl.m_lock);
 
 	if (cmd->buf_handle != tbl.bufq[idx].buf_handle) {
 		rc = -EINVAL;
@@ -767,7 +759,6 @@ static int cam_mem_util_buffer_alloc(size_t len, uint32_t flags,
 	unsigned long *i_ino)
 {
 	int rc;
-	struct dma_buf *temp_dmabuf = NULL;
 
 	rc = cam_mem_util_get_dma_buf(len, flags, dmabuf, i_ino);
 	if (rc) {
@@ -776,6 +767,13 @@ static int cam_mem_util_buffer_alloc(size_t len, uint32_t flags,
 			len, flags);
 		return rc;
 	}
+
+	/*
+	 * increment the ref count so that ref count becomes 2 here
+	 * when we close fd, refcount becomes 1 and when we do
+	 * dmap_put_buf, ref count becomes 0 and memory will be freed.
+	 */
+	get_dma_buf(*dmabuf);
 
 	*fd = dma_buf_fd(*dmabuf, O_CLOEXEC);
 	if (*fd < 0) {
@@ -786,18 +784,6 @@ static int cam_mem_util_buffer_alloc(size_t len, uint32_t flags,
 
 	CAM_DBG(CAM_MEM, "Alloc success : len=%zu, *dmabuf=%pK, fd=%d, i_ino=%lu",
 		len, *dmabuf, *fd, *i_ino);
-
-	/*
-	 * increment the ref count so that ref count becomes 2 here
-	 * when we close fd, refcount becomes 1 and when we do
-	 * dmap_put_buf, ref count becomes 0 and memory will be freed.
-	 */
-	temp_dmabuf = dma_buf_get(*fd);
-	if (IS_ERR_OR_NULL(temp_dmabuf)) {
-		rc = PTR_ERR(temp_dmabuf);
-		CAM_ERR(CAM_MEM, "dma_buf_get failed, *fd=%d, i_ino=%lu, rc=%d", *fd, *i_ino, rc);
-		goto put_buf;
-	}
 
 	return rc;
 
@@ -1416,12 +1402,6 @@ static int cam_mem_util_unmap(int32_t idx,
 		if (cam_mem_util_unmap_hw_va(idx, region, client))
 			CAM_ERR(CAM_MEM, "Failed, dmabuf=%pK",
 				tbl.bufq[idx].dma_buf);
-		/*
-		 * Workaround as smmu driver doing put_buf without get_buf for kernel mappings
-		 * Setting NULL here so that we dont call dma_buf_pt again below
-		 */
-		if (client == CAM_SMMU_MAPPING_KERNEL)
-			tbl.bufq[idx].dma_buf = NULL;
 	}
 
 	mutex_lock(&tbl.m_lock);

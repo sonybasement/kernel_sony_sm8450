@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef CAM_ICP_HW_MGR_H
@@ -217,6 +218,7 @@ struct hfi_frame_process_info {
  * @num_paths: Number of valid AXI paths
  * @axi_path: ctx based per path bw vote
  * @bw_included: Whether bw of this context is included in overal voting
+ * @max_supported_clk_level: max supported clock level
  */
 struct cam_ctx_clk_info {
 	uint32_t curr_fc;
@@ -229,6 +231,7 @@ struct cam_ctx_clk_info {
 	uint32_t num_paths;
 	struct cam_axi_per_path_bw_vote axi_path[CAM_ICP_MAX_PER_PATH_VOTES];
 	bool bw_included;
+	uint32_t max_supported_clk_level;
 };
 /**
  * struct cam_icp_hw_ctx_data
@@ -252,6 +255,7 @@ struct cam_ctx_clk_info {
  * @watch_dog_reset_counter: Counter for watch dog reset
  * @icp_dev_io_info: io config resource
  * @last_flush_req: last flush req for this ctx
+ * @abort_timed_out: Indicates if abort timed out
  */
 struct cam_icp_hw_ctx_data {
 	void *context_priv;
@@ -275,6 +279,7 @@ struct cam_icp_hw_ctx_data {
 	struct cam_icp_acquire_dev_info icp_dev_io_info;
 	uint64_t last_flush_req;
 	char ctx_id_string[128];
+	bool abort_timed_out;
 };
 
 /**

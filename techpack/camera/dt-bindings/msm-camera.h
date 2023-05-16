@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2018-2022, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef __MSM_CAMERA_H
@@ -51,6 +52,12 @@
 #define CAM_CPAS_PATH_DATA_SFE_MAX_OFFSET \
 	(CAM_CPAS_PATH_DATA_SFE_START_OFFSET + 31)
 
+#define CAM_CPAS_PATH_DATA_CRE_START_OFFSET    (CAM_CPAS_PATH_DATA_SFE_MAX_OFFSET + 1)
+#define CAM_CPAS_PATH_DATA_CRE_RD_IN           (CAM_CPAS_PATH_DATA_CRE_START_OFFSET + 0)
+#define CAM_CPAS_PATH_DATA_CRE_WR_OUT          (CAM_CPAS_PATH_DATA_CRE_START_OFFSET + 1)
+#define CAM_CPAS_PATH_DATA_CRE_MAX_OFFSET \
+	(CAM_CPAS_PATH_DATA_CRE_START_OFFSET + 31)
+
 #define CAM_CPAS_PATH_DATA_CONSO_OFFSET 256
 #define CAM_CPAS_PATH_DATA_ALL (CAM_CPAS_PATH_DATA_CONSO_OFFSET + 0)
 
@@ -64,6 +71,8 @@
 #define CAM_CPAS_PATH_DATA_IFE_UBWC (CAM_CPAS_PATH_DATA_CONSO_OFFSET + 6)
 #define CAM_CPAS_PATH_DATA_IFE_LINEAR_STATS \
 	(CAM_CPAS_PATH_DATA_CONSO_OFFSET + 7)
+#define CAM_CPAS_PATH_DATA_IFE_UBWC_LINEAR \
+	(CAM_CPAS_PATH_DATA_CONSO_OFFSET + 8)
 
 /* IPE Consolidated paths */
 #define CAM_CPAS_PATH_DATA_IPE_WR_VID_DISP (CAM_CPAS_PATH_DATA_CONSO_OFFSET + 1)
@@ -89,10 +98,20 @@
 #define CAM_CPAS_ISP_FUSE      4
 #define CAM_CPAS_ISP_PIX_FUSE  5
 #define CAM_CPAS_ISP_LITE_FUSE 6
-#define CAM_CPAS_FUSE_FEATURE_MAX 7
+#define CAM_CPAS_CSIPHY_FUSE   7
+#define CAM_CPAS_IPE_VID_OUT_8BPP_LIMIT_ENABLE 8
+#define CAM_CPAS_SHDR_MFHDR_ENABLE   23
+#define CAM_CPAS_FUSE_FEATURE_MAX 24
 
 #define CCI_MASTER_0         0
 #define CCI_MASTER_1         1
 #define CCI_MASTER_MAX       2
+
+#define CAM_FLASH_TYPE_PMIC 0
+#define CAM_FLASH_TYPE_I2C  1
+#define CAM_FLASH_TYPE_GPIO 2
+
+/* Group name for common clock source*/
+#define CAM_COMMON_TFE_SRC_CLK       1
 
 #endif
