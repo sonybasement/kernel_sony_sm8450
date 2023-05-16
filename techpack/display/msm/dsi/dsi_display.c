@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -958,6 +958,18 @@ void dsi_display_toggle_error_interrupt_status(struct dsi_display * display, boo
 		ctrl = &display->ctrl[i];
 		if (!ctrl->ctrl)
 			continue;
+
+		/*
+		 * Make sure not to toggle error status and error interrupts
+		 * while a command transfer is going on.
+		 */
+
+		if (ctrl->ctrl->post_tx_queued) {
+			flush_workqueue(display->post_cmd_tx_workq);
+			cancel_work_sync(&ctrl->ctrl->post_cmd_tx_work);
+			ctrl->ctrl->post_tx_queued = false;
+		}
+
 		dsi_ctrl_toggle_error_interrupt_status(ctrl->ctrl, enable);
 	}
 }
@@ -1121,6 +1133,7 @@ int dsi_display_cmd_transfer(struct drm_connector *connector,
 	int rc = 0, cnt = 0, i = 0;
 	bool state = false, transfer = false;
 	struct dsi_panel_cmd_set *set;
+	struct sde_connector *c_conn;
 
 	if (!dsi_display || !cmd_buf) {
 		DSI_ERR("[DSI] invalid params\n");
@@ -1148,6 +1161,22 @@ int dsi_display_cmd_transfer(struct drm_connector *connector,
 	if (rc || !state) {
 		DSI_ERR("[DSI] Invalid host state %d rc %d\n",
 				state, rc);
+		rc = -EPERM;
+		goto end;
+	}
+
+	c_conn = to_sde_connector(connector);
+
+	/*
+	 * Commands with DMA schedulig enabled, if triggered after the schedule line of last
+	 * frame will not get transferred as the controller won't be able to see the hsync of
+	 * the schedule line after the timing engine is disabled. Avoid command transfers from
+	 * debugfs during display power off sequence.
+	 */
+
+	if (c_conn->last_panel_power_mode == SDE_MODE_DPMS_OFF) {
+		SDE_EVT32(SDE_EVTLOG_ERROR, c_conn->last_panel_power_mode);
+		pr_warn_ratelimited("Command xfer attempted during display power off seq\n");
 		rc = -EPERM;
 		goto end;
 	}
@@ -2790,11 +2819,61 @@ static int dsi_display_set_clk_src(struct dsi_display *display, bool set_xo)
 	return 0;
 }
 
-int dsi_display_phy_pll_toggle(void *priv, bool prepare)
+static int dsi_display_phy_pll_enable(struct dsi_display *display)
 {
 	int rc = 0;
-	struct dsi_display *display = priv;
 	struct dsi_display_ctrl *m_ctrl;
+
+	m_ctrl = &display->ctrl[display->clk_master_idx];
+	if (!m_ctrl->phy) {
+		DSI_ERR("[%s] PHY not found\n", display->name);
+		return -EINVAL;
+	}
+
+	/*
+	 * It is recommended to turn on the PLL before switching parent
+	 * of RCG to PLL because when RCG is on, both the old and new
+	 * sources should be on while switching the RCG parent.
+	 *
+	 * Note: Branch clocks and in turn RCG might not get turned off
+	 * during clock disable sequence if there is a vote from dispcc
+	 * or any of its other consumers.
+	 */
+
+	rc = dsi_phy_pll_toggle(m_ctrl->phy, true);
+	if (rc)
+		return rc;
+
+	return dsi_display_set_clk_src(display, false);
+}
+
+static int dsi_display_phy_pll_disable(struct dsi_display *display)
+{
+	int rc = 0;
+	struct dsi_display_ctrl *m_ctrl;
+
+	/*
+	 * It is recommended to turn off the PLL after switching parent
+	 * of RCG to PLL because when RCG is on, both the old and new
+	 * sources should be on while switching the RCG parent.
+	 */
+
+	rc = dsi_display_set_clk_src(display, true);
+	if (rc)
+		return rc;
+
+	m_ctrl = &display->ctrl[display->clk_master_idx];
+	if (!m_ctrl->phy) {
+		DSI_ERR("[%s] PHY not found\n", display->name);
+		return -EINVAL;
+	}
+
+	return dsi_phy_pll_toggle(m_ctrl->phy, false);
+}
+
+int dsi_display_phy_pll_toggle(void *priv, bool prepare)
+{
+	struct dsi_display *display = priv;
 
 	if (!display) {
 		DSI_ERR("invalid arguments\n");
@@ -2804,17 +2883,10 @@ int dsi_display_phy_pll_toggle(void *priv, bool prepare)
 	if (is_skip_op_required(display))
 		return 0;
 
-	rc = dsi_display_set_clk_src(display, !prepare);
-
-	m_ctrl = &display->ctrl[display->clk_master_idx];
-	if (!m_ctrl->phy) {
-		DSI_ERR("[%s] PHY not found\n", display->name);
-		return -EINVAL;
-	}
-
-	rc = dsi_phy_pll_toggle(m_ctrl->phy, prepare);
-
-	return rc;
+	if (prepare)
+		return dsi_display_phy_pll_enable(display);
+	else
+		return dsi_display_phy_pll_disable(display);
 }
 
 int dsi_display_phy_configure(void *priv, bool commit)
@@ -3426,7 +3498,7 @@ int dsi_host_transfer_sub(struct mipi_dsi_host *host, struct dsi_cmd_desc *cmd)
 		}
 
 		rc = dsi_ctrl_cmd_transfer(display->ctrl[idx].ctrl, cmd);
-		if (rc)
+		if (rc < 0)
 			DSI_ERR("[%s] cmd transfer failed, rc=%d\n", display->name, rc);
 
 		dsi_ctrl_transfer_unprepare(display->ctrl[idx].ctrl, cmd->ctrl_flags);
@@ -3538,6 +3610,16 @@ static int dsi_display_clocks_init(struct dsi_display *display)
 		dsi_clock_name = "qcom,dsi-select-sec-clocks";
 
 	num_clk = dsi_display_get_clocks_count(display, dsi_clock_name);
+
+	if (num_clk <= 0) {
+		pll->byte_clk = NULL;
+		pll->pixel_clk = NULL;
+		rc = num_clk;
+		DSI_WARN("failed to read %s, rc = %d\n", dsi_clock_name, rc);
+		goto error;
+	}
+
+	DSI_DEBUG("clk count=%d\n", num_clk);
 
 	for (i = 0; i < num_clk; i++) {
 		dsi_display_get_clock_name(display, dsi_clock_name, i,
@@ -7103,6 +7185,17 @@ int dsi_display_get_modes(struct dsi_display *display,
 			goto error;
 		}
 
+		/*
+		 * Update the host_config.dst_format for compressed RGB101010 pixel format.
+		 */
+		if (display->panel->host_config.dst_format == DSI_PIXEL_FORMAT_RGB101010 &&
+			display_mode.timing.dsc_enabled) {
+			display->panel->host_config.dst_format = DSI_PIXEL_FORMAT_RGB888;
+			DSI_DEBUG("updated dst_format from %d to %d\n",
+				DSI_PIXEL_FORMAT_RGB101010,
+				display->panel->host_config.dst_format);
+		}
+
 		if (display->cmdline_timing == display_mode.mode_idx) {
 			topology_override = display->cmdline_topology;
 			is_preferred = true;
@@ -7289,12 +7382,22 @@ int dsi_display_get_panel_vfp(void *dsi_display,
 
 	for (i = 0; i < count; i++) {
 		struct dsi_display_mode *m = &display->modes[i];
+		u32 h_display, v_display;
+		bool fsc_mode;
 
-		if (m && v_active == m->timing.v_active &&
-			h_active == m->timing.h_active &&
-			refresh_rate == m->timing.refresh_rate) {
-			rc = m->timing.v_front_porch;
-			break;
+		if (m) {
+			fsc_mode = m->timing.fsc_mode;
+
+			h_display = fsc_mode ?
+				(m->timing.h_active * 3) : m->timing.h_active;
+			v_display = fsc_mode ?
+				(m->timing.v_active / 3) : m->timing.v_active;
+
+			if (v_active == v_display && h_active == h_display &&
+				refresh_rate == m->timing.refresh_rate) {
+				rc = m->timing.v_front_porch;
+				break;
+			}
 		}
 	}
 	mutex_unlock(&display->display_lock);
@@ -7364,9 +7467,15 @@ static bool dsi_display_match_timings(const struct dsi_display_mode *mode1,
 	bool is_matching = false;
 
 	if (match_flags & DSI_MODE_MATCH_ACTIVE_TIMINGS) {
-		is_matching = mode1->timing.h_active == mode2->timing.h_active &&
+		if (mode2->timing.fsc_mode && (!mode1->timing.fsc_mode)) {
+			is_matching = (mode1->timing.h_active / 3) == mode2->timing.h_active &&
+				(mode1->timing.v_active * 3) == mode2->timing.v_active &&
+				mode1->timing.refresh_rate == mode2->timing.refresh_rate;
+		} else {
+			is_matching = mode1->timing.h_active == mode2->timing.h_active &&
 				mode1->timing.v_active == mode2->timing.v_active &&
 				mode1->timing.refresh_rate == mode2->timing.refresh_rate;
+		}
 		if (!is_matching)
 			goto end;
 	}

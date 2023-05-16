@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -137,12 +138,16 @@ enum msm_mdp_plane_property {
 	PLANE_PROP_FP16_IGC,
 	PLANE_PROP_FP16_UNMULT,
 	PLANE_PROP_UBWC_STATS_ROI,
+	PLANE_PROP_BG_ALPHA,
 
 	/* enum/bitmask properties */
 	PLANE_PROP_BLEND_OP,
 	PLANE_PROP_SRC_CONFIG,
 	PLANE_PROP_FB_TRANSLATION_MODE,
 	PLANE_PROP_MULTIRECT_MODE,
+	PLANE_PROP_SYS_CACHE_TYPE,
+	PLANE_PROP_BUFFER_MODE,
+	PLANE_PROP_COLOR_COMPONENT,
 
 	/* total # of properties */
 	PLANE_PROP_COUNT
@@ -229,6 +234,7 @@ enum msm_mdp_conn_property {
 	CONNECTOR_PROP_SET_PANEL_MODE,
 	CONNECTOR_PROP_AVR_STEP,
 	CONNECTOR_PROP_DSC_MODE,
+	CONNECTOR_PROP_WB_FSC_MODE,
 
 	/* total # of properties */
 	CONNECTOR_PROP_COUNT
@@ -320,6 +326,16 @@ enum msm_display_dsc_mode {
 	MSM_DISPLAY_DSC_MODE_NONE,
 	MSM_DISPLAY_DSC_MODE_ENABLED,
 	MSM_DISPLAY_DSC_MODE_DISABLED,
+};
+
+/**
+ * enum msm_wb_fsc_mode - wb fsc mode
+ * @MSM_WB_FSC_MODE_DISABLED: fsc disabled
+ * @MSM_WB_FSC_MODE_DISABLED: fsc enabled
+ */
+enum msm_wb_dump_mode {
+	MSM_WB_FSC_MODE_DISABLED,
+	MSM_WB_FSC_MODE_ENABLED,
 };
 
 /**
@@ -771,7 +787,7 @@ struct msm_mode_info {
 	bool wide_bus_en;
 	u32 panel_mode_caps;
 	u32 mdp_transfer_time_us;
-	u32 allowed_mode_switches;
+	u64 allowed_mode_switches;
 	bool disable_rsc_solver;
 	struct msm_dyn_clk_list dyn_clk_list;
 	u32 qsync_min_fps;
@@ -1063,6 +1079,8 @@ void __msm_fence_worker(struct work_struct *work);
 struct drm_atomic_state *msm_atomic_state_alloc(struct drm_device *dev);
 void msm_atomic_state_clear(struct drm_atomic_state *state);
 void msm_atomic_state_free(struct drm_atomic_state *state);
+
+void msm_atomic_flush_display_threads(struct msm_drm_private *priv);
 
 int msm_gem_init_vma(struct msm_gem_address_space *aspace,
 		struct msm_gem_vma *vma, int npages);

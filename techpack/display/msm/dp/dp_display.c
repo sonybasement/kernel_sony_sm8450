@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -14,6 +15,7 @@
 #include <linux/usb/phy.h>
 #include <linux/jiffies.h>
 #include <linux/pm_qos.h>
+#include <linux/ipc_logging.h>
 
 #include "sde_connector.h"
 
@@ -33,6 +35,7 @@
 #include "dp_pll.h"
 #include "sde_dbg.h"
 
+#define DRM_DP_IPC_NUM_PAGES 10
 #define DP_MST_DEBUG(fmt, ...) DP_DEBUG(fmt, ##__VA_ARGS__)
 
 #define dp_display_state_show(x) { \
@@ -1343,6 +1346,15 @@ static int dp_display_process_hpd_high(struct dp_display_private *dp)
 	dp->dp_display.max_pclk_khz = min(dp->parser->max_pclk_khz,
 					dp->debug->max_pclk_khz);
 
+	if (!dp->debug->sim_mode && !dp->parser->no_aux_switch && !dp->parser->gpio_aux_switch
+			&& dp->aux_switch_node) {
+		rc = dp->aux->aux_switch(dp->aux, true, dp->hpd->orientation);
+		if (rc) {
+			mutex_unlock(&dp->session_lock);
+			return rc;
+		}
+	}
+
 	/*
 	 * If dp video session is not restored from a previous session teardown
 	 * by userspace, ensure the host_init is executed, in such a scenario,
@@ -1823,16 +1835,19 @@ static int dp_display_usbpd_disconnect_cb(struct device *dev)
 	if (dp->debug->psm_enabled && dp_display_state_is(DP_STATE_READY))
 		dp->link->psm_config(dp->link, &dp->panel->link_info, true);
 
+	dp->ctrl->abort(dp->ctrl, true);
+	dp->aux->abort(dp->aux, true);
+
+	if (!dp->debug->sim_mode && !dp->parser->no_aux_switch
+	    && !dp->parser->gpio_aux_switch)
+		dp->aux->aux_switch(dp->aux, false, ORIENTATION_NONE);
+
 	dp_display_disconnect_sync(dp);
 
 	mutex_lock(&dp->session_lock);
 	dp_display_host_deinit(dp);
 	dp_display_state_remove(DP_STATE_CONFIGURED);
 	mutex_unlock(&dp->session_lock);
-
-	if (!dp->debug->sim_mode && !dp->parser->no_aux_switch
-	    && !dp->parser->gpio_aux_switch)
-		dp->aux->aux_switch(dp->aux, false, ORIENTATION_NONE);
 
 	SDE_EVT32_EXTERNAL(SDE_EVTLOG_FUNC_EXIT, dp->state);
 end:
@@ -3088,7 +3103,7 @@ static int dp_display_validate_topology(struct dp_display_private *dp,
 		return -EPERM;
 	}
 
-	DP_DEBUG("mode %sx%d is valid, supported DP topology lm:%d dsc:%d 3dmux:%d\n",
+	DP_DEBUG_V("mode %sx%d is valid, supported DP topology lm:%d dsc:%d 3dmux:%d\n",
 				mode->name, fps, num_lm, num_dsc, num_3dmux);
 
 	return 0;
@@ -3258,7 +3273,8 @@ static enum drm_mode_status dp_display_validate_mode(
 #endif /* CONFIG_DRM_SDE_SPECIFIC_PANEL */
 end:
 	mutex_unlock(&dp->session_lock);
-	DP_DEBUG("[%s] mode is %s\n", mode->name,
+
+	DP_DEBUG_V("[%s] mode is %s\n", mode->name,
 			(mode_status == MODE_OK) ? "valid" : "invalid");
 
 	return mode_status;
@@ -3281,11 +3297,11 @@ static int dp_display_get_available_dp_resources(struct dp_display *dp_display,
 	max_dp_avail_res->num_dsc = min(avail_res->num_dsc,
 			dp_display->max_dsc_count);
 
-	DP_DEBUG("max_lm:%d, avail_lm:%d, dp_avail_lm:%d\n",
+	DP_DEBUG_V("max_lm:%d, avail_lm:%d, dp_avail_lm:%d\n",
 			dp_display->max_mixer_count, avail_res->num_lm,
 			max_dp_avail_res->num_lm);
 
-	DP_DEBUG("max_dsc:%d, avail_dsc:%d, dp_avail_dsc:%d\n",
+	DP_DEBUG_V("max_dsc:%d, avail_dsc:%d, dp_avail_dsc:%d\n",
 			dp_display->max_dsc_count, avail_res->num_dsc,
 			max_dp_avail_res->num_dsc);
 
@@ -3341,6 +3357,9 @@ static void dp_display_convert_to_dp_mode(struct dp_display *dp_display,
 	free_dsc_blks = dp_display->max_dsc_count -
 				dp->tot_dsc_blks_in_use +
 				dp_panel->dsc_blks_in_use;
+	DP_DEBUG_V("Before: in_use:%d, max:%d, free:%d\n",
+				dp->tot_dsc_blks_in_use,
+				dp_display->max_dsc_count, free_dsc_blks);
 
 	rc = msm_get_dsc_count(dp->priv, drm_mode->hdisplay,
 			&required_dsc_blks);
@@ -3353,7 +3372,7 @@ static void dp_display_convert_to_dp_mode(struct dp_display *dp_display,
 		dp_mode->capabilities |= DP_PANEL_CAPS_DSC;
 
 	if (dp_mode->capabilities & DP_PANEL_CAPS_DSC)
-		DP_DEBUG("in_use:%d, max:%d, free:%d, req:%d, caps:0x%x\n",
+		DP_DEBUG_V("After: in_use:%d, max:%d, free:%d, req:%d, caps:0x%x\n",
 				dp->tot_dsc_blks_in_use,
 				dp_display->max_dsc_count,
 				free_dsc_blks, required_dsc_blks,
@@ -3415,7 +3434,7 @@ static int dp_display_setup_colospace(struct dp_display *dp_display,
 	struct dp_display_private *dp;
 
 	if (!dp_display || !panel) {
-		pr_err("invalid input\n");
+		DP_ERR("invalid input\n");
 		return -EINVAL;
 	}
 
@@ -3469,7 +3488,7 @@ static int dp_display_init_aux_bridge(struct dp_display_private *dp)
 	struct device_node *bridge_node;
 
 	if (!dp->pdev->dev.of_node) {
-		pr_err("cannot find dev.of_node\n");
+		DP_ERR("cannot find dev.of_node\n");
 		rc = -ENODEV;
 		goto end;
 	}
@@ -3481,7 +3500,7 @@ static int dp_display_init_aux_bridge(struct dp_display_private *dp)
 
 	dp->aux_bridge = of_dp_aux_find_bridge(bridge_node);
 	if (!dp->aux_bridge) {
-		pr_err("failed to find dp aux bridge\n");
+		DP_ERR("failed to find dp aux bridge\n");
 		rc = -EPROBE_DEFER;
 		goto end;
 	}
@@ -3834,6 +3853,46 @@ static void dp_display_wakeup_phy_layer(struct dp_display *dp_display,
 		hpd->wakeup_phy(hpd, wakeup);
 }
 
+static int dp_display_get_display_type(struct dp_display *dp_display,
+		const char **display_type)
+{
+	struct dp_display_private *dp;
+
+	if (!dp_display || !display_type) {
+		pr_err("invalid input\n");
+		return -EINVAL;
+	}
+
+	dp = container_of(dp_display, struct dp_display_private, dp_display);
+
+	*display_type = dp->parser->display_type;
+
+	return 0;
+}
+
+static int dp_display_mst_get_fixed_topology_display_type(
+		struct dp_display *dp_display, u32 strm_id,
+		const char **display_type)
+{
+	struct dp_display_private *dp;
+
+	if (!dp_display || !display_type) {
+		pr_err("invalid input\n");
+		return -EINVAL;
+	}
+
+	if (strm_id >= DP_STREAM_MAX) {
+		pr_err("invalid stream id:%d\n", strm_id);
+		return -EINVAL;
+	}
+
+	dp = container_of(dp_display, struct dp_display_private, dp_display);
+
+	*display_type = dp->parser->mst_fixed_display_type[strm_id];
+
+	return 0;
+}
+
 static int dp_display_probe(struct platform_device *pdev)
 {
 	int rc = 0;
@@ -3873,6 +3932,10 @@ static int dp_display_probe(struct platform_device *pdev)
 
 	g_dp_display = &dp->dp_display;
 
+	g_dp_display->dp_ipc_log = ipc_log_context_create(DRM_DP_IPC_NUM_PAGES, "drm_dp", 0);
+	if (!g_dp_display->dp_ipc_log)
+		DP_WARN("Error in creating ipc_log_context\n");
+
 	g_dp_display->enable        = dp_display_enable;
 	g_dp_display->post_enable   = dp_display_post_enable;
 	g_dp_display->pre_disable   = dp_display_pre_disable;
@@ -3907,6 +3970,9 @@ static int dp_display_probe(struct platform_device *pdev)
 	g_dp_display->set_colorspace = dp_display_setup_colospace;
 	g_dp_display->get_available_dp_resources =
 					dp_display_get_available_dp_resources;
+	g_dp_display->get_display_type = dp_display_get_display_type;
+	g_dp_display->mst_get_fixed_topology_display_type =
+				dp_display_mst_get_fixed_topology_display_type;
 
 	rc = component_add(&pdev->dev, &dp_display_comp_ops);
 	if (rc) {
@@ -3984,6 +4050,11 @@ static int dp_display_remove(struct platform_device *pdev)
 	platform_set_drvdata(pdev, NULL);
 	devm_kfree(&pdev->dev, dp);
 
+	if (g_dp_display->dp_ipc_log) {
+		ipc_log_context_destroy(g_dp_display->dp_ipc_log);
+		g_dp_display->dp_ipc_log = NULL;
+	}
+
 	return 0;
 }
 
@@ -4043,6 +4114,13 @@ static void dp_pm_complete(struct device *dev)
 	dp_display_state_remove(DP_STATE_SUSPENDED);
 	mutex_unlock(&dp->session_lock);
 	SDE_EVT32_EXTERNAL(SDE_EVTLOG_FUNC_EXIT, dp->state);
+}
+
+void *get_ipc_log_context(void)
+{
+	if (g_dp_display && g_dp_display->dp_ipc_log)
+		return g_dp_display->dp_ipc_log;
+	return NULL;
 }
 
 static const struct dev_pm_ops dp_pm_ops = {

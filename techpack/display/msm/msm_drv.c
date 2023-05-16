@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2022, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -833,8 +833,12 @@ static int msm_drm_component_init(struct device *dev)
 
 	/* Bind all our sub-components: */
 	ret = msm_component_bind_all(dev, ddev);
-	if (ret)
+	if (ret == -EPROBE_DEFER) {
+		destroy_workqueue(priv->wq);
+		return ret;
+	} else if (ret) {
 		goto bind_fail;
+	}
 
 	ret = msm_init_vram(ddev);
 	if (ret)
@@ -947,6 +951,25 @@ mdss_init_fail:
 	return ret;
 }
 
+void msm_atomic_flush_display_threads(struct msm_drm_private *priv)
+{
+	int i;
+
+	if (!priv) {
+		SDE_ERROR("invalid private data\n");
+		return;
+	}
+
+	for (i = 0; i < priv->num_crtcs; i++) {
+		if (priv->disp_thread[i].thread)
+			kthread_flush_worker(&priv->disp_thread[i].worker);
+		if (priv->event_thread[i].thread)
+			kthread_flush_worker(&priv->event_thread[i].worker);
+	}
+
+	kthread_flush_worker(&priv->pp_event_worker);
+}
+
 /*
  * DRM operations:
  */
@@ -1037,8 +1060,17 @@ static void msm_lastclose(struct drm_device *dev)
 	 * commit then ignore the last close call
 	 */
 	if (kms->funcs && kms->funcs->check_for_splash
-		&& kms->funcs->check_for_splash(kms))
-		return;
+		&& kms->funcs->check_for_splash(kms)) {
+		msm_wait_event_timeout(priv->pending_crtcs_event, !priv->pending_crtcs,
+			LASTCLOSE_TIMEOUT_MS, rc);
+		if (!rc)
+			DRM_INFO("wait for crtc mask 0x%x failed, commit anyway...\n",
+				priv->pending_crtcs);
+
+		rc = kms->funcs->trigger_null_flush(kms);
+		if (rc)
+			return;
+	}
 
 	/*
 	 * clean up vblank disable immediately as this is the last close.
@@ -1060,6 +1092,8 @@ static void msm_lastclose(struct drm_device *dev)
 	if (!rc)
 		DRM_INFO("wait for crtc mask 0x%x failed, commit anyway...\n",
 				priv->pending_crtcs);
+
+	msm_atomic_flush_display_threads(priv);
 
 	if (priv->fbdev) {
 		rc = drm_fb_helper_restore_fbdev_mode_unlocked(priv->fbdev);
@@ -1518,8 +1552,15 @@ static int msm_release(struct inode *inode, struct file *filp)
 	 * refcount > 1. This operation is not triggered from upstream
 	 * drm as msm_driver does not support DRIVER_LEGACY feature.
 	 */
-	if (drm_is_current_master(file_priv))
+	if (drm_is_current_master(file_priv)) {
+		msm_wait_event_timeout(priv->pending_crtcs_event, !priv->pending_crtcs,
+			LASTCLOSE_TIMEOUT_MS, ret);
+		if (!ret)
+			DRM_INFO("wait for crtc mask 0x%x failed, commit anyway...\n",
+				priv->pending_crtcs);
+
 		msm_preclose(dev, file_priv);
+	}
 
 	ret = drm_release(inode, filp);
 	filp->private_data = NULL;
@@ -2104,17 +2145,24 @@ static int msm_drm_component_dependency_check(struct device *dev)
 		if (!node)
 			break;
 
-		if (of_node_name_eq(node,"qcom,sde_rscc") &&
-				of_device_is_available(node) &&
-				of_node_check_flag(node, OF_POPULATED)) {
-			struct platform_device *pdev =
-					of_find_device_by_node(node);
-			if (!platform_get_drvdata(pdev)) {
-				dev_err(dev,
-					"qcom,sde_rscc not probed yet\n");
-				return -EPROBE_DEFER;
+		if (of_node_name_eq(node, "qcom,sde_rscc")) {
+			if (of_device_is_available(node) &&
+					of_node_check_flag(node, OF_POPULATED)) {
+				struct platform_device *pdev =
+						of_find_device_by_node(node);
+				if (!platform_get_drvdata(pdev)) {
+					dev_err(dev,
+						"qcom,sde_rscc not probed yet\n");
+					return -EPROBE_DEFER;
+				} else {
+					return 0;
+				}
 			} else {
-				return 0;
+				dev_err(dev,
+					"of_device_is_available: %d of_node_check_flag: %d\n",
+						of_device_is_available(node),
+						of_node_check_flag(node, OF_POPULATED));
+				return -EPROBE_DEFER;
 			}
 		}
 	}
@@ -2167,8 +2215,8 @@ static void msm_pdev_shutdown(struct platform_device *pdev)
 	}
 
 	priv = ddev->dev_private;
-	if (!priv) {
-		DRM_ERROR("invalid msm drm private node\n");
+	if (!priv || !priv->registered) {
+		DRM_ERROR("invalid msm drm private node or drm dev not registered\n");
 		return;
 	}
 

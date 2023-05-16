@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -11,6 +12,7 @@
 #include "sde_dbg.h"
 #include "sde_kms.h"
 #include "sde_hw_reg_dma_v1_color_proc.h"
+#include "sde_hw_vbif.h"
 
 #define SDE_FETCH_CONFIG_RESET_VALUE   0x00000087
 
@@ -110,6 +112,8 @@
 #define SSPP_VIG_OP_MODE                   0x0
 #define SSPP_VIG_CSC_10_OP_MODE            0x0
 #define SSPP_TRAFFIC_SHAPER_BPC_MAX        0xFF
+#define SSPP_CLK_CTRL                      0x330
+#define SSPP_CLK_STATUS                    0x334
 
 /* SSPP_QOS_CTRL */
 #define SSPP_QOS_CTRL_VBLANK_EN            BIT(16)
@@ -341,19 +345,51 @@ static void sde_hw_sspp_setup_ubwc(struct sde_hw_pipe *ctx, struct sde_hw_blk_re
 	}
 }
 
+static u32 _sde_hw_sspp_setup_unpack(const struct sde_format *fmt,
+		u32 comp_color, u8 *unpack_count)
+{
+	u32 unpack = 0;
+
+	switch (comp_color) {
+	case SDE_COMP_R:
+		unpack = (C3_ALPHA << 24) | (C3_ALPHA << 16) |
+				(C3_ALPHA << 8) | (C2_R_Cr << 0);
+		*unpack_count = 1;
+		break;
+	case SDE_COMP_G:
+		unpack = (C3_ALPHA << 24) | (C3_ALPHA << 16) |
+				(C0_G_Y << 8) | (C3_ALPHA << 0);
+		*unpack_count = 1;
+		break;
+	case SDE_COMP_B:
+		unpack = (C3_ALPHA << 24) | (C1_B_Cb << 16) |
+				(C3_ALPHA << 8) | (C3_ALPHA << 0);
+		*unpack_count = 1;
+		break;
+	default:
+		unpack = (fmt->element[3] << 24) | (fmt->element[2] << 16) |
+				(fmt->element[1] << 8) | (fmt->element[0] << 0);
+		*unpack_count = fmt->unpack_count;
+	}
+
+	return unpack;
+}
+
 /**
  * Setup source pixel format, flip,
  */
 static void sde_hw_sspp_setup_format(struct sde_hw_pipe *ctx,
 		const struct sde_format *fmt,
 		bool const_alpha_en, u32 flags,
-		enum sde_sspp_multirect_index rect_mode)
+		enum sde_sspp_multirect_index rect_mode,
+		u32 comp_color)
 {
 	struct sde_hw_blk_reg_map *c;
 	u32 chroma_samp, unpack, src_format;
 	u32 opmode = 0;
 	u32 op_mode_off, unpack_pat_off, format_off;
 	u32 idx;
+	u8 unpack_count;
 	bool const_color_en = true;
 
 	if (_sspp_subblk_offset(ctx, SDE_SSPP_SRC, &idx) || !fmt)
@@ -400,9 +436,9 @@ static void sde_hw_sspp_setup_format(struct sde_hw_pipe *ctx,
 	if (flags & SDE_SSPP_SOLID_FILL)
 		src_format |= BIT(22);
 
-	unpack = (fmt->element[3] << 24) | (fmt->element[2] << 16) |
-		(fmt->element[1] << 8) | (fmt->element[0] << 0);
-	src_format |= ((fmt->unpack_count - 1) << 12) |
+	unpack = _sde_hw_sspp_setup_unpack(fmt, comp_color, &unpack_count);
+
+	src_format |= ((unpack_count - 1) << 12) |
 		(fmt->unpack_tight << 17) |
 		(fmt->unpack_align_msb << 18);
 
@@ -1380,6 +1416,39 @@ static void sde_hw_sspp_setup_dgm_csc(struct sde_hw_pipe *ctx,
 	SDE_REG_WRITE(&ctx->hw, offset, op_mode);
 }
 
+static bool sde_hw_sspp_setup_clk_force_ctrl(struct sde_hw_blk_reg_map *hw,
+		enum sde_clk_ctrl_type clk_ctrl, bool enable)
+{
+	u32 reg_val, new_val;
+
+	if (!hw || !SDE_CLK_CTRL_SSPP_VALID(clk_ctrl))
+		return false;
+
+	reg_val = SDE_REG_READ(hw, SSPP_CLK_CTRL);
+
+	if (enable)
+		new_val = reg_val | BIT(0);
+	else
+		new_val = reg_val & ~BIT(0);
+
+	SDE_REG_WRITE(hw, SSPP_CLK_CTRL, new_val);
+	wmb(); /* ensure write finished before progressing */
+
+	return !(reg_val & BIT(0));
+}
+
+static int sde_hw_sspp_get_clk_ctrl_status(struct sde_hw_blk_reg_map *hw,
+		enum sde_clk_ctrl_type clk_ctrl)
+{
+	if (!hw)
+		return -EINVAL;
+
+	if (!SDE_CLK_CTRL_SSPP_VALID(clk_ctrl))
+		return -EINVAL;
+
+	return SDE_REG_READ(hw, SSPP_CLK_STATUS) & BIT(0);
+}
+
 static void _setup_layer_ops(struct sde_hw_pipe *c,
 		unsigned long features, unsigned long perf_features,
 		bool is_virtual_pipe)
@@ -1511,7 +1580,7 @@ static struct sde_hw_blk_ops sde_hw_ops = {
 
 struct sde_hw_pipe *sde_hw_sspp_init(enum sde_sspp idx,
 		void __iomem *addr, struct sde_mdss_cfg *catalog,
-		bool is_virtual_pipe)
+		bool is_virtual_pipe, struct sde_vbif_clk_client *clk_client)
 {
 	struct sde_hw_pipe *hw_pipe;
 	struct sde_sspp_cfg *cfg;
@@ -1591,6 +1660,17 @@ struct sde_hw_pipe *sde_hw_sspp_init(enum sde_sspp idx,
 			hw_pipe->hw.blk_off + cfg->sblk->scaler_blk.base +
 				cfg->sblk->scaler_blk.len,
 			hw_pipe->hw.xin_id);
+
+	if (catalog->has_vbif_clk_split) {
+		if (SDE_CLK_CTRL_SSPP_VALID(cfg->clk_ctrl)) {
+			clk_client->hw = &hw_pipe->hw;
+			clk_client->clk_ctrl = cfg->clk_ctrl;
+			clk_client->ops.get_clk_ctrl_status = sde_hw_sspp_get_clk_ctrl_status;
+			clk_client->ops.setup_clk_force_ctrl = sde_hw_sspp_setup_clk_force_ctrl;
+		} else {
+			SDE_ERROR("invalid sspp clk ctrl type %d\n", cfg->clk_ctrl);
+		}
+	}
 
 	return hw_pipe;
 

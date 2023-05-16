@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
- * Copyright (c) 2015-2022, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
 #ifndef _SDE_HW_CATALOG_H
@@ -51,7 +51,10 @@
 #define SDE_HW_VER_720	SDE_HW_VER(7, 2, 0) /* yupik */
 #define SDE_HW_VER_810	SDE_HW_VER(8, 1, 0) /* waipio */
 #define SDE_HW_VER_820	SDE_HW_VER(8, 2, 0) /* diwali */
+#define SDE_HW_VER_830	SDE_HW_VER(8, 3, 0) /* parrot */
 #define SDE_HW_VER_850	SDE_HW_VER(8, 5, 0) /* cape */
+#define SDE_HW_VER_860	SDE_HW_VER(8, 6, 0) /* ravelin */
+#define SDE_HW_VER_910	SDE_HW_VER(9, 1, 0) /* neo */
 
 /* Avoid using below IS_XXX macros outside catalog, use feature bit instead */
 #define IS_SDE_MAJOR_SAME(rev1, rev2)   \
@@ -79,7 +82,10 @@
 #define IS_YUPIK_TARGET(rev) IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_VER_720)
 #define IS_WAIPIO_TARGET(rev) IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_VER_810)
 #define IS_DIWALI_TARGET(rev) IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_VER_820)
+#define IS_PARROT_TARGET(rev) IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_VER_830)
 #define IS_CAPE_TARGET(rev) IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_VER_850)
+#define IS_RAVELIN_TARGET(rev) IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_VER_860)
+#define IS_NEO_TARGET(rev) IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_VER_910)
 
 #define SDE_HW_BLK_NAME_LEN	16
 
@@ -158,6 +164,7 @@ enum {
 	SDE_HW_UBWC_VER_20 = SDE_HW_UBWC_VER(0x200),
 	SDE_HW_UBWC_VER_30 = SDE_HW_UBWC_VER(0x300),
 	SDE_HW_UBWC_VER_40 = SDE_HW_UBWC_VER(0x400),
+	SDE_HW_UBWC_VER_43 = SDE_HW_UBWC_VER(0x431),
 };
 #define IS_UBWC_10_SUPPORTED(rev) \
 		IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_UBWC_VER_10)
@@ -167,6 +174,8 @@ enum {
 		IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_UBWC_VER_30)
 #define IS_UBWC_40_SUPPORTED(rev) \
 		IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_UBWC_VER_40)
+#define IS_UBWC_43_SUPPORTED(rev) \
+		IS_SDE_MAJOR_MINOR_SAME((rev), SDE_HW_UBWC_VER_43)
 
 /**
  * Supported SSPP system cache settings
@@ -177,6 +186,12 @@ enum {
 #define SSPP_SYS_CACHE_OP_TYPE	BIT(3)
 #define SSPP_SYS_CACHE_NO_ALLOC	BIT(4)
 
+enum sde_sys_cache_op_type {
+	SDE_SYS_CACHE_NORMAL_READ = 0,
+	SDE_SYS_CACHE_READ_INVALIDATE = 2,
+	SDE_SYS_CACHE_READ_EVICT = 3
+};
+
 /**
  * sde_sys_cache_type: Types of system cache supported
  * SDE_SYS_CACHE_DISP: Static img system cache
@@ -185,6 +200,8 @@ enum {
  */
 enum sde_sys_cache_type {
 	SDE_SYS_CACHE_DISP,
+	SDE_SYS_CACHE_DISP_LEFT,
+	SDE_SYS_CACHE_DISP_RIGHT,
 	SDE_SYS_CACHE_MAX,
 	SDE_SYS_CACHE_NONE = SDE_SYS_CACHE_MAX
 };
@@ -228,6 +245,7 @@ struct sde_intr_irq_offsets {
  * @SDE_MDP_WD_TIMER      WD timer support
  * @SDE_MDP_DHDR_MEMPOOL   Dynamic HDR Metadata mempool present
  * @SDE_MDP_DHDR_MEMPOOL_4K Dynamic HDR mempool is 4k aligned
+ * @SDE_MDP_LLCC_DISP_LR   Separate SCID for left and right display
  * @SDE_MDP_PERIPH_TOP_REMOVED Indicates if periph top0 block is removed
  * @SDE_MDP_MAX            Maximum value
 
@@ -243,6 +261,7 @@ enum {
 	SDE_MDP_DHDR_MEMPOOL,
 	SDE_MDP_DHDR_MEMPOOL_4K,
 	SDE_MDP_PERIPH_TOP_0_REMOVED,
+	SDE_MDP_LLCC_DISP_LR,
 	SDE_MDP_MAX
 };
 
@@ -356,6 +375,8 @@ enum {
  * @SDE_DISP_SECONDARY_PREF   Layer mixer preferred for secondary display
  * @SDE_MIXER_COMBINED_ALPHA  Layer mixer bg and fg alpha in single register
  * @SDE_MIXER_NOISE_LAYER     Layer mixer supports noise layer
+ * @SDE_MIXER_IS_VIRTUAL      Layer mixer which is removed but used for proper
+ *                            Dedicated CWB allocation
  * @SDE_MIXER_MAX             maximum value
  */
 enum {
@@ -369,6 +390,7 @@ enum {
 	SDE_DISP_DCWB_PREF,
 	SDE_MIXER_COMBINED_ALPHA,
 	SDE_MIXER_NOISE_LAYER,
+	SDE_MIXER_IS_VIRTUAL,
 	SDE_MIXER_MAX
 };
 
@@ -498,6 +520,7 @@ enum {
  *                              blocks
  * @SDE_CTL_UIDLE               CTL supports uidle
  * @SDE_CTL_UNIFIED_DSPP_FLUSH  CTL supports only one flush bit for DSPP
+ * @SDE_CTL_DMA4_DMA5		CTL supports DMA4 & DMA5 pipes
  * @SDE_CTL_MAX
  */
 enum {
@@ -507,6 +530,7 @@ enum {
 	SDE_CTL_ACTIVE_CFG,
 	SDE_CTL_UIDLE,
 	SDE_CTL_UNIFIED_DSPP_FLUSH,
+	SDE_CTL_DMA4_DMA5,
 	SDE_CTL_MAX
 };
 
@@ -519,7 +543,8 @@ enum {
  * @SDE_INTF_WD_TIMER          INTF block has WD Timer support
  * @SDE_INTF_STATUS             INTF block has INTF_STATUS register
  * @SDE_INTF_RESET_COUNTER      INTF block has frame/line counter reset support
- * @SDE_INTF_VSYNC_TIMESTAMP    INTF block has vsync timestamp logged
+ * @SDE_INTF_PANEL_VSYNC_TS     INTF block has panel vsync timestamp logged
+ * @SDE_INTF_MDP_VSYNC_TS       INTF block has mdp vsync timestamp logged
  * @SDE_INTF_AVR_STATUS         INTF block has AVR_STATUS field in AVR_CONTROL register
  * @SDE_INTF_MAX
  */
@@ -530,7 +555,8 @@ enum {
 	SDE_INTF_WD_TIMER,
 	SDE_INTF_STATUS,
 	SDE_INTF_RESET_COUNTER,
-	SDE_INTF_VSYNC_TIMESTAMP,
+	SDE_INTF_PANEL_VSYNC_TS,
+	SDE_INTF_MDP_VSYNC_TS,
 	SDE_INTF_AVR_STATUS,
 	SDE_INTF_MAX
 };
@@ -950,13 +976,53 @@ enum sde_clk_ctrl_type {
 	SDE_CLK_CTRL_RGB3,
 	SDE_CLK_CTRL_DMA0,
 	SDE_CLK_CTRL_DMA1,
+	SDE_CLK_CTRL_DMA2,
+	SDE_CLK_CTRL_DMA3,
+	SDE_CLK_CTRL_DMA4,
+	SDE_CLK_CTRL_DMA5,
 	SDE_CLK_CTRL_CURSOR0,
 	SDE_CLK_CTRL_CURSOR1,
 	SDE_CLK_CTRL_WB0,
 	SDE_CLK_CTRL_WB1,
 	SDE_CLK_CTRL_WB2,
 	SDE_CLK_CTRL_LUTDMA,
+	SDE_CLK_CTRL_IPCC_MSI,
 	SDE_CLK_CTRL_MAX,
+};
+
+#define SDE_CLK_CTRL_VALID(x) (x > SDE_CLK_CTRL_NONE && x < SDE_CLK_CTRL_MAX)
+#define SDE_CLK_CTRL_SSPP_VALID(x) (x >= SDE_CLK_CTRL_VIG0 && x <= SDE_CLK_CTRL_CURSOR1)
+#define SDE_CLK_CTRL_WB_VALID(x) (x >= SDE_CLK_CTRL_WB0 && x <= SDE_CLK_CTRL_WB2)
+#define SDE_CLK_CTRL_LUTDMA_VALID(x) (x == SDE_CLK_CTRL_LUTDMA)
+#define SDE_CLK_CTRL_IPCC_MSI_VALID(x) (x == SDE_CLK_CTRL_IPCC_MSI)
+
+/**
+ * sde_clk_ctrl_type - String of top level clock control signals
+ */
+static const char *sde_clk_ctrl_type_s[SDE_CLK_CTRL_MAX] = {
+	[SDE_CLK_CTRL_NONE] = "NONE",
+	[SDE_CLK_CTRL_VIG0] = "VIG0",
+	[SDE_CLK_CTRL_VIG1] = "VIG1",
+	[SDE_CLK_CTRL_VIG2] = "VIG2",
+	[SDE_CLK_CTRL_VIG3] = "VIG3",
+	[SDE_CLK_CTRL_VIG4] = "VIG4",
+	[SDE_CLK_CTRL_RGB0] = "RGB0",
+	[SDE_CLK_CTRL_RGB1] = "RGB1",
+	[SDE_CLK_CTRL_RGB2] = "RGB2",
+	[SDE_CLK_CTRL_RGB3] = "RGB3",
+	[SDE_CLK_CTRL_DMA0] = "DMA0",
+	[SDE_CLK_CTRL_DMA1] = "DMA1",
+	[SDE_CLK_CTRL_DMA2] = "DMA2",
+	[SDE_CLK_CTRL_DMA3] = "DMA3",
+	[SDE_CLK_CTRL_DMA4] = "DMA4",
+	[SDE_CLK_CTRL_DMA5] = "DMA5",
+	[SDE_CLK_CTRL_CURSOR0] = "CURSOR0",
+	[SDE_CLK_CTRL_CURSOR1] = "CURSOR1",
+	[SDE_CLK_CTRL_WB0] = "WB0",
+	[SDE_CLK_CTRL_WB1] = "WB1",
+	[SDE_CLK_CTRL_WB2] = "WB2",
+	[SDE_CLK_CTRL_LUTDMA] = "LUTDMA",
+	[SDE_CLK_CTRL_IPCC_MSI] = "IPCC_MSI",
 };
 
 /* struct sde_clk_ctrl_reg : Clock control register
@@ -1148,11 +1214,13 @@ struct sde_ds_cfg {
  * @features           bit mask identifying sub-blocks/features
  * @sblk               sub-blocks information
  * @merge_3d_id        merge_3d block id
+ * @dcwb:              ID of DCWB, DCWB_MAX if invalid
  */
 struct sde_pingpong_cfg  {
 	SDE_HW_BLK_INFO;
 	const struct sde_pingpong_sub_blks *sblk;
 	int merge_3d_id;
+	u32 dcwb_id;
 };
 
 /**
@@ -1508,6 +1576,7 @@ struct sde_perf_cfg {
 
  * @min_display_width   minimum display width support.
  * @min_display_height  minimum display height support.
+ * @in_rot_maxheight    max pre rotated height for inline rotation.
  * @csc_type           csc or csc_10bit support.
  * @smart_dma_rev      Supported version of SmartDMA feature.
  * @ctl_rev            supported version of control path.
@@ -1568,11 +1637,14 @@ struct sde_perf_cfg {
  *                         during secure-ui session
  * @sui_supported_blendstage  secure-ui supported blendstage
  * @has_sui_blendstage  flag to indicate secure-ui has a blendstage restriction
+ * @ddr_count           number of ddr types supported
+ * @ddr_list_index      Index of supported ddr type
  * @has_cursor    indicates if hardware cursor is supported
  * @has_vig_p010  indicates if vig pipe supports p010 format
  * @has_fp16      indicates if FP16 format is supported on SSPP pipes
  * @has_precise_vsync_ts  indicates if HW has vsyc timestamp logging capability
  * @has_ubwc_stats: indicates if ubwc stats feature is supported
+ * @has_vbif_clk_split: VBIF clock split supported
  * @mdss_hw_block_size  Max offset of MDSS_HW block (0 offset), used for debug
  * @inline_rot_formats formats supported by the inline rotator feature
  * @irq_offset_list     list of sde_intr_irq_offsets to initialize irq table
@@ -1600,6 +1672,7 @@ struct sde_mdss_cfg {
 	u32 max_display_height;
 	u32 min_display_width;
 	u32 min_display_height;
+	u32 in_rot_maxheight;
 
 	u32 csc_type;
 	u32 smart_dma_rev;
@@ -1656,6 +1729,9 @@ struct sde_mdss_cfg {
 	u32 sui_supported_blendstage;
 	bool has_sui_blendstage;
 
+	u32 ddr_count;
+	u32 ddr_list_index;
+
 	bool has_hdr;
 	bool has_hdr_plus;
 	bool has_cursor;
@@ -1663,6 +1739,8 @@ struct sde_mdss_cfg {
 	bool has_fp16;
 	bool has_precise_vsync_ts;
 	bool has_ubwc_stats;
+
+	bool has_vbif_clk_split;
 
 	u32 mdss_hw_block_size;
 	u32 mdss_count;
@@ -1682,6 +1760,7 @@ struct sde_mdss_cfg {
 
 	u32 mixer_count;
 	struct sde_lm_cfg mixer[MAX_BLOCKS];
+	u32 virtual_mixers_mask;
 
 	struct sde_dspp_top_cfg dspp_top;
 
@@ -1770,13 +1849,15 @@ struct sde_mdss_hw_cfg_handler {
 #define BLK_RC(s) ((s)->rc)
 
 /**
- * sde_hw_set_preference: populate the individual hw lm preferences,
- *                        overwrite if exists
- * @sde_cfg:              pointer to sspp cfg
- * @num_lm:               num lms to set preference
- * @disp_type:            is the given display primary/secondary
+ * sde_hw_mixer_set_preference: populate the individual hw lm preferences,
+ *                              overwrite if exists
+ * @sde_cfg:                    pointer to sspp cfg
+ * @num_lm:                     num lms to set preference
+ * @disp_type:                  is the given display primary/secondary
+ *
+ * Return:                      layer mixer mask allocated for the disp_type
  */
-void sde_hw_mixer_set_preference(struct sde_mdss_cfg *sde_cfg, u32 num_lm,
+u32 sde_hw_mixer_set_preference(struct sde_mdss_cfg *sde_cfg, u32 num_lm,
 		uint32_t disp_type);
 
 /**

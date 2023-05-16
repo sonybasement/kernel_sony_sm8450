@@ -882,10 +882,10 @@ static int _set_spr_init_feature(struct sde_hw_dspp *hw_dspp,
 {
 	int ret = 0;
 
-	if (!sde_crtc || !hw_dspp || !hw_dspp->ops.setup_spr_init_config) {
+	if (!sde_crtc || !hw_dspp) {
 		DRM_ERROR("invalid arguments\n");
 		ret = -EINVAL;
-	} else {
+	} else if (hw_dspp->ops.setup_spr_init_config) {
 		hw_dspp->ops.setup_spr_init_config(hw_dspp, hw_cfg);
 		_update_pu_feature_enable(sde_crtc, SDE_CP_CRTC_DSPP_SPR_PU,
 				hw_cfg->payload != NULL);
@@ -900,9 +900,10 @@ static int _set_demura_feature(struct sde_hw_dspp *hw_dspp,
 {
 	int ret = 0;
 
-	if (!hw_dspp || !hw_dspp->ops.setup_demura_cfg) {
+	if (!sde_crtc || !hw_dspp) {
+		DRM_ERROR("invalid arguments\n");
 		ret = -EINVAL;
-	} else {
+	} else if (hw_dspp->ops.setup_demura_cfg) {
 		hw_dspp->ops.setup_demura_cfg(hw_dspp, hw_cfg);
 		_update_pu_feature_enable(sde_crtc, SDE_CP_CRTC_DSPP_DEMURA_PU,
 				hw_cfg->payload != NULL);
@@ -1650,6 +1651,7 @@ static void _sde_cp_crtc_commit_feature(struct sde_cp_node *prop_node,
 	int i = 0, ret = 0;
 	bool feature_enabled = false;
 	struct sde_mdss_cfg *catalog = NULL;
+	struct sde_crtc_state *sde_crtc_state;
 
 	memset(&hw_cfg, 0, sizeof(hw_cfg));
 	_sde_cp_get_cached_payload(prop_node, &hw_cfg, &feature_enabled);
@@ -1661,6 +1663,13 @@ static void _sde_cp_crtc_commit_feature(struct sde_cp_node *prop_node,
 	hw_cfg.skip_blend_plane = sde_crtc->skip_blend_plane;
 	hw_cfg.skip_blend_plane_h = sde_crtc->skip_blend_plane_h;
 	hw_cfg.skip_blend_plane_w = sde_crtc->skip_blend_plane_w;
+
+	sde_crtc_state = to_sde_crtc_state(sde_crtc->base.state);
+	if (!sde_crtc_state) {
+		DRM_ERROR("invalid sde_crtc_state %pK\n", sde_crtc_state);
+		return;
+	}
+	hw_cfg.num_ds_enabled = sde_crtc_state->num_ds_enabled;
 
 	SDE_EVT32(hw_cfg.panel_width, hw_cfg.panel_height);
 

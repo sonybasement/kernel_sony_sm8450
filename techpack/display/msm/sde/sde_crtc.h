@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021 The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -563,6 +563,13 @@ struct sde_crtc_irq_info {
 	((S) && ((X) < CRTC_PROP_COUNT) ? ((S)->property_values[(X)].value) : 0)
 
 /**
+ * sde_crtc_is_connector_fsc - check if connector is in fsc mode
+ * @cstate: Pointer to sde crtc state
+ * Returns: true if fsc to fsc mode else false
+ */
+bool sde_crtc_is_connector_fsc(struct sde_crtc_state *cstate);
+
+/**
  * sde_crtc_get_mixer_width - get the mixer width
  * Mixer width will be same as panel width(/2 for split)
  * unless destination scaler feature is enabled
@@ -578,7 +585,8 @@ static inline int sde_crtc_get_mixer_width(struct sde_crtc *sde_crtc,
 	if (cstate->num_ds_enabled)
 		mixer_width = cstate->ds_cfg[0].lm_width;
 	else
-		mixer_width = mode->hdisplay / sde_crtc->num_mixers;
+		mixer_width = GET_MODE_WIDTH(sde_crtc_is_connector_fsc(cstate), mode) /
+				sde_crtc->num_mixers;
 
 	return mixer_width;
 }
@@ -594,8 +602,8 @@ static inline int sde_crtc_get_mixer_height(struct sde_crtc *sde_crtc,
 	if (!sde_crtc || !cstate || !mode)
 		return 0;
 
-	return (cstate->num_ds_enabled ?
-			cstate->ds_cfg[0].lm_height : mode->vdisplay);
+	return (cstate->num_ds_enabled ? cstate->ds_cfg[0].lm_height :
+			GET_MODE_HEIGHT(sde_crtc_is_connector_fsc(cstate), mode));
 }
 
 /**
@@ -1066,5 +1074,12 @@ struct drm_encoder *sde_crtc_get_src_encoder_of_clone(struct drm_crtc *crtc);
  * _sde_crtc_vm_release_notify- send event to usermode on vm release
  */
 void _sde_crtc_vm_release_notify(struct drm_crtc *crtc);
+
+/**
+ * sde_crtc_state_setup_connector - populate connectors in sde crtc state
+ * @state: Pointer to drm crtc state
+ * @dev: Pointer to drm device
+ */
+void sde_crtc_state_setup_connectors(struct drm_crtc_state *state, struct drm_device *dev);
 
 #endif /* _SDE_CRTC_H_ */

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -13,6 +14,7 @@
 #include "sde_hw_blk.h"
 #include "sde_formats.h"
 #include "sde_color_processing.h"
+#include "sde_hw_vbif.h"
 
 struct sde_hw_pipe;
 
@@ -102,6 +104,13 @@ struct sde_hw_sharp_cfg {
 	u32 edge_thr;
 	u32 smooth_thr;
 	u32 noise_thr;
+};
+
+enum sde_sspp_color_component {
+	SDE_COMP_NONE = 0,
+	SDE_COMP_R,
+	SDE_COMP_G,
+	SDE_COMP_B,
 };
 
 struct sde_hw_pixel_ext {
@@ -302,11 +311,13 @@ struct sde_hw_sspp_ops {
 	 * @blend_enabled: flag indicating blend enabled or disabled on plane
 	 * @flags: Extra flags for format config
 	 * @index: rectangle index in multirect
+	 * @comp_color: component color for unpack
 	 */
 	void (*setup_format)(struct sde_hw_pipe *ctx,
 			const struct sde_format *fmt,
 			bool blend_enabled, u32 flags,
-			enum sde_sspp_multirect_index index);
+			enum sde_sspp_multirect_index index,
+			u32 comp_color);
 
 	/**
 	 * setup_rects - setup pipe ROI rectangles
@@ -722,10 +733,11 @@ static inline struct sde_hw_pipe *to_sde_hw_pipe(struct sde_hw_blk *hw)
  * @addr: Mapped register io address of MDP
  * @catalog : Pointer to mdss catalog data
  * @is_virtual_pipe: is this pipe virtual pipe
+ * @client: Pointer to VBIF clock client info
  */
 struct sde_hw_pipe *sde_hw_sspp_init(enum sde_sspp idx,
 		void __iomem *addr, struct sde_mdss_cfg *catalog,
-		bool is_virtual_pipe);
+		bool is_virtual_pipe, struct sde_vbif_clk_client *client);
 
 /**
  * sde_hw_sspp_destroy(): Destroys SSPP driver context
