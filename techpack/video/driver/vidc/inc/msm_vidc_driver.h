@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2020-2021,, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
  */
 
 #ifndef _MSM_VIDC_DRIVER_H_
@@ -11,6 +12,7 @@
 #include "msm_vidc_internal.h"
 #include "msm_vidc_core.h"
 #include "msm_vidc_inst.h"
+#include "msm_vidc_platform.h"
 
 #define MSM_VIDC_SESSION_INACTIVE_THRESHOLD_MS 1000
 #define HEIC_GRID_DIMENSION 512
@@ -447,6 +449,12 @@ bool res_is_less_than(u32 width, u32 height,
 	u32 ref_width, u32 ref_height);
 bool res_is_less_than_or_equal_to(u32 width, u32 height,
 	u32 ref_width, u32 ref_height);
+bool is_ubwc_supported_platform(struct msm_vidc_inst *inst);
 int msm_vidc_get_properties(struct msm_vidc_inst *inst);
+int msm_vidc_get_src_clk_scaling_ratio(struct msm_vidc_core *core);
+int msm_vidc_qbuf_cache_operation(struct msm_vidc_inst *inst,
+	struct msm_vidc_buffer *buf);
+int msm_vidc_dqbuf_cache_operation(struct msm_vidc_inst *inst,
+	struct msm_vidc_buffer *buf);
 #endif // _MSM_VIDC_DRIVER_H_
 

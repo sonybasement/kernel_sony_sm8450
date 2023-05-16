@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2020-2021,, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _MSM_VIDC_CONTROL_H_
@@ -10,8 +11,9 @@
 #include "msm_vidc_inst.h"
 #include "msm_vidc_internal.h"
 
-int msm_vidc_ctrl_init(struct msm_vidc_inst *inst);
-int msm_vidc_ctrl_deinit(struct msm_vidc_inst *inst);
+int msm_vidc_ctrl_handler_init(struct msm_vidc_inst *inst, bool init);
+int msm_vidc_ctrl_handler_deinit(struct msm_vidc_inst *inst);
+int msm_vidc_ctrl_handler_update(struct msm_vidc_inst *inst);
 int msm_v4l2_op_s_ctrl(struct v4l2_ctrl *ctrl);
 int msm_vidc_adjust_bitrate(void *instance, struct v4l2_ctrl *ctrl);
 int msm_vidc_adjust_dynamic_layer_bitrate(void *instance, struct v4l2_ctrl *ctrl);
@@ -101,7 +103,6 @@ int msm_vidc_set_csc_custom_matrix(void *instance,
 	enum msm_vidc_inst_capability_type cap_id);
 int msm_vidc_set_session_priority(void* instance,
 	enum msm_vidc_inst_capability_type cap_id);
-int msm_vidc_set_seq_change_at_sync_frame(void *instance);
 int msm_vidc_set_level(void *instance,
 	enum msm_vidc_inst_capability_type cap_id);
 int msm_vidc_set_s32(void *instance,
@@ -115,5 +116,7 @@ int msm_vidc_v4l2_to_hfi_enum(struct msm_vidc_inst *inst,
 	enum msm_vidc_inst_capability_type cap_id, u32 *value);
 int msm_vidc_update_cap_value(struct msm_vidc_inst *inst, u32 cap,
 	s32 adjusted_val, const char *func);
+int msm_vidc_set_vui_timing_info(void *instance,
+	enum msm_vidc_inst_capability_type cap_id);
 
 #endif

@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2021 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/of.h>
-#include <linux/io.h>
-#include <linux/sort.h>
 
 #include "msm_vidc_diwali.h"
 #include "msm_vidc_platform.h"
@@ -33,6 +31,7 @@
 #define MAX_QP                  51
 #define DEFAULT_QP              20
 #define MAX_CONSTANT_QUALITY    100
+#define MAX_BITRATE_BOOST       25
 #define MIN_SLICE_BYTE_SIZE     512
 #define MAX_SLICE_BYTE_SIZE       \
 	((MAX_BITRATE) >> 3)
@@ -40,31 +39,6 @@
 	((MAX_BITRATE_V1) >> 3)
 #define MAX_SLICE_MB_SIZE         \
 	(((4096 + 15) >> 4) * ((2304 + 15) >> 4))
-
-#define UBWC_CONFIG(mc, ml, hbb, bs1, bs2, bs3, bsp) \
-{	\
-	.max_channels = mc,	\
-	.mal_length = ml,	\
-	.highest_bank_bit = hbb,	\
-	.bank_swzl_level = bs1,	\
-	.bank_swz2_level = bs2, \
-	.bank_swz3_level = bs3, \
-	.bank_spreading = bsp,	\
-}
-
-#define EFUSE_ENTRY(sa, s, m, sh, p) \
-{	\
-	.start_address = sa,		\
-	.size = s,	\
-	.mask = m,	\
-	.shift = sh,	\
-	.purpose = p	\
-}
-
-#define DDR_TYPE_LPDDR4 0x6
-#define DDR_TYPE_LPDDR4X 0x7
-#define DDR_TYPE_LPDDR5 0x8
-#define DDR_TYPE_LPDDR5X 0x9
 
 #define ENC     MSM_VIDC_ENCODER
 #define DEC     MSM_VIDC_DECODER
@@ -122,7 +96,7 @@ static struct msm_platform_core_capability core_data_diwali_v0[] = {
 	{STATS_TIMEOUT_MS, 2000},
 	{AV_SYNC_WINDOW_SIZE, 40},
 	{NON_FATAL_FAULTS, 1},
-	{ENC_AUTO_FRAMERATE, 1},
+	{ENC_AUTO_FRAMERATE, 0},
 	{MMRM, 0},
 };
 
@@ -172,7 +146,7 @@ static struct msm_platform_core_capability core_data_diwali_v1[] = {
 	{STATS_TIMEOUT_MS, 2000},
 	{AV_SYNC_WINDOW_SIZE, 40},
 	{NON_FATAL_FAULTS, 1},
-	{ENC_AUTO_FRAMERATE, 1},
+	{ENC_AUTO_FRAMERATE, 0},
 	{MMRM, 0},
 };
 
@@ -187,8 +161,8 @@ static struct msm_platform_core_capability core_data_diwali_v2[] = {
 	{MAX_SECURE_SESSION_COUNT, 3},
 	{MAX_RT_MBPF, 97920}, /* ((3840x2176)/256) x 3 */
 	{MAX_MBPF, 110592}, /* ((4096x2304)/256) x 3 */
-	/* Concurrency: UHD@30 decode + 1080p@30 encode */
-	{MAX_MBPS, 1105920}, /* max_load 4096x2304@30fps*/
+	/* max_load 4096x2304@30fps*/
+	{MAX_MBPS, 1224000}, /* Concurrency: UHD@30 decode + 1080p@30 encode */
 	{MAX_IMAGE_MBPF, 1048576},  /* (16384x16384)/256 */
 	{MAX_MBPF_HQ, 8160}, /* ((1920x1088)/256) */
 	{MAX_MBPS_HQ, 244800}, /* ((1920x1088)/256)@30fps */
@@ -217,12 +191,12 @@ static struct msm_platform_core_capability core_data_diwali_v2[] = {
 	{PAGEFAULT_NON_FATAL, 1},
 	{PAGETABLE_CACHING, 0},
 	{DCVS, 1},
-	{DECODE_BATCH, 0},
+	{DECODE_BATCH, 1},
 	{DECODE_BATCH_TIMEOUT, 200},
 	{STATS_TIMEOUT_MS, 2000},
 	{AV_SYNC_WINDOW_SIZE, 40},
 	{NON_FATAL_FAULTS, 1},
-	{ENC_AUTO_FRAMERATE, 1},
+	{ENC_AUTO_FRAMERATE, 0},
 	{MMRM, 0},
 };
 
@@ -324,9 +298,14 @@ static struct msm_platform_inst_capability instance_data_diwali_v0[] = {
 	/* (4096 * 2304) / 256 */
 	{LOSSLESS_MBPF, ENC, H264|HEVC, 64, 36864, 1, 36864},
 	/* Batch Mode Decode */
+	/* BATCH_MBPF + 2 is done for chipsets other than waipio
+	 * due to timeline constraints since msm_vidc_allow_decode_batch
+	 * has checks to allow batching for less than BATCH_MBPF.
+	 * Same applies for BATCH_FPS.
+	 */
 	/* (1920 * 1088) / 256 */
-	{BATCH_MBPF, DEC, H264|HEVC|VP9, 64, 8160, 1, 8160},
-	{BATCH_FPS, DEC, H264|HEVC|VP9, 1, 120, 1, 60},
+	{BATCH_MBPF, DEC, H264|HEVC|VP9, 64, 8162, 1, 8162},
+	{BATCH_FPS, DEC, H264|HEVC|VP9, 1, 61, 1, 61},
 	/* (4096 * 2304) / 256 */
 	{SECURE_MBPF, ENC|DEC, H264|HEVC|VP9, 64, 36864, 1, 36864},
 	/* ((4096 * 2304) / 256) * 60 fps */
@@ -390,7 +369,7 @@ static struct msm_platform_inst_capability instance_data_diwali_v0[] = {
 		1, V4L2_MPEG_MSM_VIDC_DISABLE,
 		V4L2_CID_MPEG_VIDC_TS_REORDER},
 
-	{HFLIP, ENC, CODECS_ALL,
+	{HFLIP, ENC, HEVC|H264,
 		V4L2_MPEG_MSM_VIDC_DISABLE,
 		V4L2_MPEG_MSM_VIDC_ENABLE,
 		1, V4L2_MPEG_MSM_VIDC_DISABLE,
@@ -402,7 +381,7 @@ static struct msm_platform_inst_capability instance_data_diwali_v0[] = {
 		{0},
 		NULL, msm_vidc_set_flip},
 
-	{VFLIP, ENC, CODECS_ALL,
+	{VFLIP, ENC, HEVC|H264,
 		V4L2_MPEG_MSM_VIDC_DISABLE,
 		V4L2_MPEG_MSM_VIDC_ENABLE,
 		1, V4L2_MPEG_MSM_VIDC_DISABLE,
@@ -414,7 +393,7 @@ static struct msm_platform_inst_capability instance_data_diwali_v0[] = {
 		{0},
 		NULL, msm_vidc_set_flip},
 
-	{ROTATION, ENC, CODECS_ALL,
+	{ROTATION, ENC, HEVC|H264,
 		0, 270, 90, 0,
 		V4L2_CID_ROTATE,
 		HFI_PROP_ROTATION,
@@ -450,6 +429,16 @@ static struct msm_platform_inst_capability instance_data_diwali_v0[] = {
 		V4L2_MPEG_MSM_VIDC_ENABLE,
 		1, V4L2_MPEG_MSM_VIDC_DISABLE,
 		V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR},
+
+	{VUI_TIMING_INFO, ENC, CODECS_ALL,
+		V4L2_MPEG_MSM_VIDC_DISABLE,
+		V4L2_MPEG_MSM_VIDC_ENABLE,
+		1, V4L2_MPEG_MSM_VIDC_DISABLE,
+		V4L2_CID_MPEG_VIDC_VUI_TIMING_INFO,
+		HFI_PROP_DISABLE_VUI_TIMING_INFO,
+		CAP_FLAG_OUTPUT_PORT,
+		{0}, {0},
+		NULL, msm_vidc_set_vui_timing_info},
 
 	{META_SEQ_HDR_NAL, ENC, CODECS_ALL,
 		V4L2_MPEG_MSM_VIDC_DISABLE,
@@ -512,8 +501,8 @@ static struct msm_platform_inst_capability instance_data_diwali_v0[] = {
 		{0},
 		{LTR_COUNT, IR_RANDOM, TIME_DELTA_BASED_RC, I_FRAME_QP,
 			P_FRAME_QP, B_FRAME_QP, ENH_LAYER_COUNT, BIT_RATE,
-			CONTENT_ADAPTIVE_CODING, BITRATE_BOOST, MIN_QUALITY,
-			VBV_DELAY, PEAK_BITRATE,SLICE_MODE, META_ROI_INFO,
+			META_ROI_INFO, MIN_QUALITY, BITRATE_BOOST, VBV_DELAY,
+			PEAK_BITRATE, SLICE_MODE, CONTENT_ADAPTIVE_CODING,
 			BLUR_TYPES, LOWLATENCY_MODE},
 		msm_vidc_adjust_bitrate_mode, msm_vidc_set_u32_enum},
 
@@ -530,10 +519,9 @@ static struct msm_platform_inst_capability instance_data_diwali_v0[] = {
 		{0},
 		{LTR_COUNT, IR_RANDOM, TIME_DELTA_BASED_RC, I_FRAME_QP,
 			P_FRAME_QP, B_FRAME_QP, CONSTANT_QUALITY, ENH_LAYER_COUNT,
-			CONTENT_ADAPTIVE_CODING, BIT_RATE,
-			BITRATE_BOOST, MIN_QUALITY, VBV_DELAY,
-			PEAK_BITRATE, SLICE_MODE, META_ROI_INFO, BLUR_TYPES,
-			LOWLATENCY_MODE},
+			BIT_RATE, META_ROI_INFO, MIN_QUALITY, BITRATE_BOOST, VBV_DELAY,
+			PEAK_BITRATE, SLICE_MODE, CONTENT_ADAPTIVE_CODING,
+			BLUR_TYPES, LOWLATENCY_MODE},
 		msm_vidc_adjust_bitrate_mode, msm_vidc_set_u32_enum},
 
 	{LOSSLESS, ENC, HEVC,
@@ -591,15 +579,6 @@ static struct msm_platform_inst_capability instance_data_diwali_v0[] = {
 		{ALL_INTRA},
 		msm_vidc_adjust_b_frame, msm_vidc_set_u32},
 
-	{BLUR_TYPES, ENC, CODECS_ALL,
-		VIDC_BLUR_NONE, VIDC_BLUR_ADAPTIVE, 1, VIDC_BLUR_ADAPTIVE,
-		V4L2_CID_MPEG_VIDC_VIDEO_BLUR_TYPES,
-		HFI_PROP_BLUR_TYPES,
-		CAP_FLAG_OUTPUT_PORT,
-		{PIX_FMTS, BITRATE_MODE, CONTENT_ADAPTIVE_CODING},
-		{BLUR_RESOLUTION},
-		msm_vidc_adjust_blur_type, msm_vidc_set_u32_enum},
-
 	{BLUR_TYPES, ENC, H264|HEVC,
 		VIDC_BLUR_NONE, VIDC_BLUR_ADAPTIVE, 1, VIDC_BLUR_ADAPTIVE,
 		V4L2_CID_MPEG_VIDC_VIDEO_BLUR_TYPES,
@@ -609,7 +588,7 @@ static struct msm_platform_inst_capability instance_data_diwali_v0[] = {
 		{BLUR_RESOLUTION},
 		msm_vidc_adjust_blur_type, msm_vidc_set_u32_enum},
 
-	{BLUR_RESOLUTION, ENC, CODECS_ALL,
+	{BLUR_RESOLUTION, ENC, H264|HEVC,
 		0, S32_MAX, 1, 0,
 		V4L2_CID_MPEG_VIDC_VIDEO_BLUR_RESOLUTION,
 		HFI_PROP_BLUR_RESOLUTION,
@@ -651,7 +630,7 @@ static struct msm_platform_inst_capability instance_data_diwali_v0[] = {
 		1, V4L2_MPEG_MSM_VIDC_DISABLE,
 		V4L2_CID_MPEG_VIDC_LOWLATENCY_REQUEST,
 		HFI_PROP_SEQ_CHANGE_AT_SYNC_FRAME,
-		CAP_FLAG_INPUT_PORT | CAP_FLAG_DYNAMIC_ALLOWED},
+		CAP_FLAG_INPUT_PORT},
 
 	{LTR_COUNT, ENC, H264|HEVC,
 		0, 2, 1, 0,
@@ -726,7 +705,8 @@ static struct msm_platform_inst_capability instance_data_diwali_v0[] = {
 		msm_vidc_set_vbr_related_properties},
 
 	{BITRATE_BOOST, ENC, H264|HEVC,
-		0, MAX_BITRATE_BOOST, 25, MAX_BITRATE_BOOST,
+		0, MAX_BITRATE_BOOST,
+		MAX_BITRATE_BOOST, MAX_BITRATE_BOOST,
 		V4L2_CID_MPEG_VIDC_QUALITY_BITRATE_BOOST,
 		HFI_PROP_BITRATE_BOOST,
 		CAP_FLAG_OUTPUT_PORT,
@@ -1733,7 +1713,7 @@ static struct msm_platform_inst_capability instance_data_diwali_v0[] = {
 	{PIX_FMTS, ENC, HEIC,
 		MSM_VIDC_FMT_NV12,
 		MSM_VIDC_FMT_P010,
-		MSM_VIDC_FMT_NV12 | MSM_VIDC_FMT_P010,
+		MSM_VIDC_FMT_NV12 | MSM_VIDC_FMT_NV21 | MSM_VIDC_FMT_P010,
 		MSM_VIDC_FMT_NV12,
 		0, 0,
 		CAP_FLAG_ROOT,
@@ -1868,9 +1848,14 @@ static struct msm_platform_inst_capability instance_data_diwali_v1[] = {
 	/* (4096 * 2304) / 256 */
 	{LOSSLESS_MBPF, ENC, H264|HEVC, 64, 36864, 1, 36864},
 	/* Batch Mode Decode */
+	/* BATCH_MBPF + 2 is done for chipsets other than waipio
+	 * due to timeline constraints since msm_vidc_allow_decode_batch
+	 * has checks to allow batching for less than BATCH_MBPF.
+	 * Same applies for BATCH_FPS.
+	 */
 	/* (1920 * 1088) / 256 */
-	{BATCH_MBPF, DEC, H264|HEVC|VP9, 64, 8160, 1, 8160},
-	{BATCH_FPS, DEC, H264|HEVC|VP9, 1, 120, 1, 60},
+	{BATCH_MBPF, DEC, H264|HEVC|VP9, 64, 8162, 1, 8162},
+	{BATCH_FPS, DEC, H264|HEVC|VP9, 1, 61, 1, 61},
 	/* (4096 * 2304) / 256 */
 	{SECURE_MBPF, ENC|DEC, H264|HEVC|VP9, 64, 36864, 1, 36864},
 	/* ((4096 * 2304) / 256) * 60 fps */
@@ -1927,7 +1912,7 @@ static struct msm_platform_inst_capability instance_data_diwali_v1[] = {
 		{0},
 		NULL, msm_vidc_set_u32},
 
-	{HFLIP, ENC, CODECS_ALL,
+	{HFLIP, ENC, HEVC|H264,
 		V4L2_MPEG_MSM_VIDC_DISABLE,
 		V4L2_MPEG_MSM_VIDC_ENABLE,
 		1, V4L2_MPEG_MSM_VIDC_DISABLE,
@@ -1939,7 +1924,7 @@ static struct msm_platform_inst_capability instance_data_diwali_v1[] = {
 		{0},
 		NULL, msm_vidc_set_flip},
 
-	{VFLIP, ENC, CODECS_ALL,
+	{VFLIP, ENC, HEVC|H264,
 		V4L2_MPEG_MSM_VIDC_DISABLE,
 		V4L2_MPEG_MSM_VIDC_ENABLE,
 		1, V4L2_MPEG_MSM_VIDC_DISABLE,
@@ -1951,7 +1936,7 @@ static struct msm_platform_inst_capability instance_data_diwali_v1[] = {
 		{0},
 		NULL, msm_vidc_set_flip},
 
-	{ROTATION, ENC, CODECS_ALL,
+	{ROTATION, ENC, HEVC|H264,
 		0, 270, 90, 0,
 		V4L2_CID_ROTATE,
 		HFI_PROP_ROTATION,
@@ -1987,6 +1972,16 @@ static struct msm_platform_inst_capability instance_data_diwali_v1[] = {
 		V4L2_MPEG_MSM_VIDC_ENABLE,
 		1, V4L2_MPEG_MSM_VIDC_DISABLE,
 		V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR},
+
+	{VUI_TIMING_INFO, ENC, CODECS_ALL,
+		V4L2_MPEG_MSM_VIDC_DISABLE,
+		V4L2_MPEG_MSM_VIDC_ENABLE,
+		1, V4L2_MPEG_MSM_VIDC_DISABLE,
+		V4L2_CID_MPEG_VIDC_VUI_TIMING_INFO,
+		HFI_PROP_DISABLE_VUI_TIMING_INFO,
+		CAP_FLAG_OUTPUT_PORT,
+		{0}, {0},
+		NULL, msm_vidc_set_vui_timing_info},
 
 	{META_SEQ_HDR_NAL, ENC, CODECS_ALL,
 		V4L2_MPEG_MSM_VIDC_DISABLE,
@@ -2049,8 +2044,8 @@ static struct msm_platform_inst_capability instance_data_diwali_v1[] = {
 		{0},
 		{LTR_COUNT, IR_RANDOM, TIME_DELTA_BASED_RC, I_FRAME_QP,
 			P_FRAME_QP, B_FRAME_QP, ENH_LAYER_COUNT, BIT_RATE,
-			CONTENT_ADAPTIVE_CODING, BITRATE_BOOST, MIN_QUALITY,
-			VBV_DELAY, PEAK_BITRATE,SLICE_MODE, META_ROI_INFO,
+			META_ROI_INFO, MIN_QUALITY, BITRATE_BOOST, VBV_DELAY,
+			PEAK_BITRATE, SLICE_MODE, CONTENT_ADAPTIVE_CODING,
 			BLUR_TYPES, LOWLATENCY_MODE},
 		msm_vidc_adjust_bitrate_mode, msm_vidc_set_u32_enum},
 
@@ -2067,10 +2062,9 @@ static struct msm_platform_inst_capability instance_data_diwali_v1[] = {
 		{0},
 		{LTR_COUNT, IR_RANDOM, TIME_DELTA_BASED_RC, I_FRAME_QP,
 			P_FRAME_QP, B_FRAME_QP, CONSTANT_QUALITY, ENH_LAYER_COUNT,
-			CONTENT_ADAPTIVE_CODING, BIT_RATE,
-			BITRATE_BOOST, MIN_QUALITY, VBV_DELAY,
-			PEAK_BITRATE, SLICE_MODE, META_ROI_INFO, BLUR_TYPES,
-			LOWLATENCY_MODE},
+			BIT_RATE, META_ROI_INFO, MIN_QUALITY, BITRATE_BOOST, VBV_DELAY,
+			PEAK_BITRATE, SLICE_MODE, CONTENT_ADAPTIVE_CODING,
+			BLUR_TYPES, LOWLATENCY_MODE},
 		msm_vidc_adjust_bitrate_mode, msm_vidc_set_u32_enum},
 
 	{LOSSLESS, ENC, HEVC,
@@ -2128,15 +2122,6 @@ static struct msm_platform_inst_capability instance_data_diwali_v1[] = {
 		{ALL_INTRA},
 		msm_vidc_adjust_b_frame, msm_vidc_set_u32},
 
-	{BLUR_TYPES, ENC, CODECS_ALL,
-		VIDC_BLUR_NONE, VIDC_BLUR_ADAPTIVE, 1, VIDC_BLUR_ADAPTIVE,
-		V4L2_CID_MPEG_VIDC_VIDEO_BLUR_TYPES,
-		HFI_PROP_BLUR_TYPES,
-		CAP_FLAG_OUTPUT_PORT,
-		{PIX_FMTS, BITRATE_MODE, CONTENT_ADAPTIVE_CODING},
-		{BLUR_RESOLUTION},
-		msm_vidc_adjust_blur_type, msm_vidc_set_u32_enum},
-
 	{BLUR_TYPES, ENC, H264|HEVC,
 		VIDC_BLUR_NONE, VIDC_BLUR_ADAPTIVE, 1, VIDC_BLUR_ADAPTIVE,
 		V4L2_CID_MPEG_VIDC_VIDEO_BLUR_TYPES,
@@ -2146,7 +2131,7 @@ static struct msm_platform_inst_capability instance_data_diwali_v1[] = {
 		{BLUR_RESOLUTION},
 		msm_vidc_adjust_blur_type, msm_vidc_set_u32_enum},
 
-	{BLUR_RESOLUTION, ENC, CODECS_ALL,
+	{BLUR_RESOLUTION, ENC, H264|HEVC,
 		0, S32_MAX, 1, 0,
 		V4L2_CID_MPEG_VIDC_VIDEO_BLUR_RESOLUTION,
 		HFI_PROP_BLUR_RESOLUTION,
@@ -2188,7 +2173,7 @@ static struct msm_platform_inst_capability instance_data_diwali_v1[] = {
 		1, V4L2_MPEG_MSM_VIDC_DISABLE,
 		V4L2_CID_MPEG_VIDC_LOWLATENCY_REQUEST,
 		HFI_PROP_SEQ_CHANGE_AT_SYNC_FRAME,
-		CAP_FLAG_INPUT_PORT | CAP_FLAG_DYNAMIC_ALLOWED},
+		CAP_FLAG_INPUT_PORT},
 
 	{LTR_COUNT, ENC, H264|HEVC,
 		0, 2, 1, 0,
@@ -2263,7 +2248,8 @@ static struct msm_platform_inst_capability instance_data_diwali_v1[] = {
 		msm_vidc_set_vbr_related_properties},
 
 	{BITRATE_BOOST, ENC, H264|HEVC,
-		0, MAX_BITRATE_BOOST, 25, MAX_BITRATE_BOOST,
+		0, MAX_BITRATE_BOOST,
+		MAX_BITRATE_BOOST, MAX_BITRATE_BOOST,
 		V4L2_CID_MPEG_VIDC_QUALITY_BITRATE_BOOST,
 		HFI_PROP_BITRATE_BOOST,
 		CAP_FLAG_OUTPUT_PORT,
@@ -3403,6 +3389,15 @@ static struct msm_platform_inst_capability instance_data_diwali_v2[] = {
 	{MBPF, DEC, CODECS_ALL, 36, 36864, 1, 36864},
 	/* (4096 * 2304) / 256 */
 	{LOSSLESS_MBPF, ENC, H264|HEVC, 64, 36864, 1, 36864},
+	/* Batch Mode Decode */
+	/* BATCH_MBPF + 2 is done for chipsets other than waipio
+	 * due to timeline constraints since msm_vidc_allow_decode_batch
+	 * has checks to allow batching for less than BATCH_MBPF.
+	 * Same applies for BATCH_FPS.
+	 */
+	/* (1920 * 1088) / 256 */
+	{BATCH_MBPF, DEC, H264|HEVC|VP9, 64, 8162, 1, 8162},
+	{BATCH_FPS, DEC, H264|HEVC|VP9, 1, 61, 1, 61},
 	/* (4096 * 2304) / 256 */
 	{SECURE_MBPF, ENC|DEC, H264|HEVC|VP9, 64, 36864, 1, 36864},
 	/* ((4096 * 2304) / 256) * 30 fps */
@@ -3459,7 +3454,7 @@ static struct msm_platform_inst_capability instance_data_diwali_v2[] = {
 		{0},
 		NULL, msm_vidc_set_u32},
 
-	{HFLIP, ENC, CODECS_ALL,
+	{HFLIP, ENC, HEVC|H264,
 		V4L2_MPEG_MSM_VIDC_DISABLE,
 		V4L2_MPEG_MSM_VIDC_ENABLE,
 		1, V4L2_MPEG_MSM_VIDC_DISABLE,
@@ -3471,7 +3466,7 @@ static struct msm_platform_inst_capability instance_data_diwali_v2[] = {
 		{0},
 		NULL, msm_vidc_set_flip},
 
-	{VFLIP, ENC, CODECS_ALL,
+	{VFLIP, ENC, HEVC|H264,
 		V4L2_MPEG_MSM_VIDC_DISABLE,
 		V4L2_MPEG_MSM_VIDC_ENABLE,
 		1, V4L2_MPEG_MSM_VIDC_DISABLE,
@@ -3483,7 +3478,7 @@ static struct msm_platform_inst_capability instance_data_diwali_v2[] = {
 		{0},
 		NULL, msm_vidc_set_flip},
 
-	{ROTATION, ENC, CODECS_ALL,
+	{ROTATION, ENC, HEVC|H264,
 		0, 270, 90, 0,
 		V4L2_CID_ROTATE,
 		HFI_PROP_ROTATION,
@@ -3519,6 +3514,16 @@ static struct msm_platform_inst_capability instance_data_diwali_v2[] = {
 		V4L2_MPEG_MSM_VIDC_ENABLE,
 		1, V4L2_MPEG_MSM_VIDC_DISABLE,
 		V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR},
+
+	{VUI_TIMING_INFO, ENC, CODECS_ALL,
+		V4L2_MPEG_MSM_VIDC_DISABLE,
+		V4L2_MPEG_MSM_VIDC_ENABLE,
+		1, V4L2_MPEG_MSM_VIDC_DISABLE,
+		V4L2_CID_MPEG_VIDC_VUI_TIMING_INFO,
+		HFI_PROP_DISABLE_VUI_TIMING_INFO,
+		CAP_FLAG_OUTPUT_PORT,
+		{0}, {0},
+		NULL, msm_vidc_set_vui_timing_info},
 
 	{META_SEQ_HDR_NAL, ENC, CODECS_ALL,
 		V4L2_MPEG_MSM_VIDC_DISABLE,
@@ -3581,8 +3586,8 @@ static struct msm_platform_inst_capability instance_data_diwali_v2[] = {
 		{0},
 		{LTR_COUNT, IR_RANDOM, TIME_DELTA_BASED_RC, I_FRAME_QP,
 			P_FRAME_QP, B_FRAME_QP, ENH_LAYER_COUNT, BIT_RATE,
-			CONTENT_ADAPTIVE_CODING, BITRATE_BOOST, MIN_QUALITY,
-			VBV_DELAY, PEAK_BITRATE,SLICE_MODE, META_ROI_INFO,
+			META_ROI_INFO, MIN_QUALITY, BITRATE_BOOST, VBV_DELAY,
+			PEAK_BITRATE, SLICE_MODE, CONTENT_ADAPTIVE_CODING,
 			BLUR_TYPES, LOWLATENCY_MODE},
 		msm_vidc_adjust_bitrate_mode, msm_vidc_set_u32_enum},
 
@@ -3599,10 +3604,9 @@ static struct msm_platform_inst_capability instance_data_diwali_v2[] = {
 		{0},
 		{LTR_COUNT, IR_RANDOM, TIME_DELTA_BASED_RC, I_FRAME_QP,
 			P_FRAME_QP, B_FRAME_QP, CONSTANT_QUALITY, ENH_LAYER_COUNT,
-			CONTENT_ADAPTIVE_CODING, BIT_RATE,
-			BITRATE_BOOST, MIN_QUALITY, VBV_DELAY,
-			PEAK_BITRATE, SLICE_MODE, META_ROI_INFO, BLUR_TYPES,
-			LOWLATENCY_MODE},
+			BIT_RATE, META_ROI_INFO, MIN_QUALITY, BITRATE_BOOST, VBV_DELAY,
+			PEAK_BITRATE, SLICE_MODE, CONTENT_ADAPTIVE_CODING,
+			BLUR_TYPES, LOWLATENCY_MODE},
 		msm_vidc_adjust_bitrate_mode, msm_vidc_set_u32_enum},
 
 	{LOSSLESS, ENC, HEVC,
@@ -3660,15 +3664,6 @@ static struct msm_platform_inst_capability instance_data_diwali_v2[] = {
 		{ALL_INTRA},
 		msm_vidc_adjust_b_frame, msm_vidc_set_u32},
 
-	{BLUR_TYPES, ENC, CODECS_ALL,
-		VIDC_BLUR_NONE, VIDC_BLUR_ADAPTIVE, 1, VIDC_BLUR_ADAPTIVE,
-		V4L2_CID_MPEG_VIDC_VIDEO_BLUR_TYPES,
-		HFI_PROP_BLUR_TYPES,
-		CAP_FLAG_OUTPUT_PORT,
-		{PIX_FMTS, BITRATE_MODE, CONTENT_ADAPTIVE_CODING},
-		{BLUR_RESOLUTION},
-		msm_vidc_adjust_blur_type, msm_vidc_set_u32_enum},
-
 	{BLUR_TYPES, ENC, H264|HEVC,
 		VIDC_BLUR_NONE, VIDC_BLUR_ADAPTIVE, 1, VIDC_BLUR_ADAPTIVE,
 		V4L2_CID_MPEG_VIDC_VIDEO_BLUR_TYPES,
@@ -3678,7 +3673,7 @@ static struct msm_platform_inst_capability instance_data_diwali_v2[] = {
 		{BLUR_RESOLUTION},
 		msm_vidc_adjust_blur_type, msm_vidc_set_u32_enum},
 
-	{BLUR_RESOLUTION, ENC, CODECS_ALL,
+	{BLUR_RESOLUTION, ENC, H264|HEVC,
 		0, S32_MAX, 1, 0,
 		V4L2_CID_MPEG_VIDC_VIDEO_BLUR_RESOLUTION,
 		HFI_PROP_BLUR_RESOLUTION,
@@ -3720,7 +3715,7 @@ static struct msm_platform_inst_capability instance_data_diwali_v2[] = {
 		1, V4L2_MPEG_MSM_VIDC_DISABLE,
 		V4L2_CID_MPEG_VIDC_LOWLATENCY_REQUEST,
 		HFI_PROP_SEQ_CHANGE_AT_SYNC_FRAME,
-		CAP_FLAG_INPUT_PORT | CAP_FLAG_DYNAMIC_ALLOWED},
+		CAP_FLAG_INPUT_PORT},
 
 	{LTR_COUNT, ENC, H264|HEVC,
 		0, 2, 1, 0,
@@ -3795,7 +3790,8 @@ static struct msm_platform_inst_capability instance_data_diwali_v2[] = {
 		msm_vidc_set_vbr_related_properties},
 
 	{BITRATE_BOOST, ENC, H264|HEVC,
-		0, MAX_BITRATE_BOOST, 25, MAX_BITRATE_BOOST,
+		0, MAX_BITRATE_BOOST,
+		MAX_BITRATE_BOOST, MAX_BITRATE_BOOST,
 		V4L2_CID_MPEG_VIDC_QUALITY_BITRATE_BOOST,
 		HFI_PROP_BITRATE_BOOST,
 		CAP_FLAG_OUTPUT_PORT,
@@ -4845,26 +4841,6 @@ static struct allowed_clock_rates_table clock_data_diwali_v2[] = {
 	{200000000}
 };
 
-/*
- * Custom conversion coefficients for resolution: 176x144 negative
- * coeffs are converted to s4.9 format
- * (e.g. -22 converted to ((1 << 13) - 22)
- * 3x3 transformation matrix coefficients in s4.9 fixed point format
- */
-static u32 vpe_csc_custom_matrix_coeff[MAX_MATRIX_COEFFS] = {
-	440, 8140, 8098, 0, 460, 52, 0, 34, 463
-};
-
-/* offset coefficients in s9 fixed point format */
-static u32 vpe_csc_custom_bias_coeff[MAX_BIAS_COEFFS] = {
-	53, 0, 4
-};
-
-/* clamping value for Y/U/V([min,max] for Y/U/V) */
-static u32 vpe_csc_custom_limit_coeff[MAX_LIMIT_COEFFS] = {
-	16, 235, 16, 240, 16, 240
-};
-
 /* Default UBWC config for LPDDR5 */
 static struct msm_vidc_ubwc_config_data ubwc_config_diwali[] = {
 	UBWC_CONFIG(8, 32, 15, 0, 1, 1, 1),
@@ -4896,80 +4872,12 @@ static struct msm_vidc_platform_data diwali_data = {
 	.efuse_data = efuse_data_diwali,
 	.efuse_data_size = ARRAY_SIZE(efuse_data_diwali),
 	.sku_version = 0,
+	.vpu_ver = VPU_VERSION_IRIS2_2PIPE,
 };
-
-static int msm_vidc_read_efuse(struct msm_vidc_core *core)
-{
-	int rc = 0;
-	void __iomem *base;
-	u32 i = 0, efuse = 0, efuse_data_count = 0;
-	struct msm_vidc_efuse_data *efuse_data = NULL;
-	struct msm_vidc_platform_data *platform_data;
-
-	if (!core || !core->platform || !core->pdev) {
-		d_vpr_e("%s: invalid params\n", __func__);
-		return -EINVAL;
-	}
-
-	platform_data = &core->platform->data;
-	efuse_data = platform_data->efuse_data;
-	efuse_data_count = platform_data->efuse_data_size;
-
-	if (!efuse_data)
-		return 0;
-
-	for (i = 0; i < efuse_data_count; i++) {
-		switch ((efuse_data[i]).purpose) {
-		case SKU_VERSION:
-			base = devm_ioremap(&core->pdev->dev, (efuse_data[i]).start_address,
-					(efuse_data[i]).size);
-			if (!base) {
-				d_vpr_e("failed efuse: start %#x, size %d\n",
-					(efuse_data[i]).start_address,
-					(efuse_data[i]).size);
-				return -EINVAL;
-			} else {
-				efuse = readl_relaxed(base);
-				platform_data->sku_version =
-						(efuse & (efuse_data[i]).mask) >>
-						(efuse_data[i]).shift;
-			}
-			break;
-		default:
-			break;
-		}
-		if (platform_data->sku_version) {
-			d_vpr_h("efuse 0x%x, platform version 0x%x\n",
-				efuse, platform_data->sku_version);
-			break;
-		}
-	}
-	return rc;
-}
-
-static void msm_vidc_ddr_ubwc_config(
-	struct msm_vidc_platform_data *platform_data, u32 hbb_override_val)
-{
-	uint32_t ddr_type = DDR_TYPE_LPDDR5;
-
-	ddr_type = of_fdt_get_ddrtype();
-	if (ddr_type == -ENOENT) {
-		d_vpr_e("Failed to get ddr type, use LPDDR5\n");
-	}
-
-	if (platform_data->ubwc_config &&
-		(ddr_type == DDR_TYPE_LPDDR4 ||
-		 ddr_type == DDR_TYPE_LPDDR4X))
-		platform_data->ubwc_config->highest_bank_bit = hbb_override_val;
-
-	d_vpr_h("DDR Type 0x%x hbb 0x%x\n",
-		ddr_type, platform_data->ubwc_config ?
-		platform_data->ubwc_config->highest_bank_bit : -1);
-}
 
 static int msm_vidc_init_data(struct msm_vidc_core *core)
 {
-	int rc = 0, i = 0;
+	int rc = 0;
 	struct msm_vidc_platform_data *platform_data = NULL;
 
 	if (!core || !core->platform || !core->dt) {
@@ -5012,13 +4920,8 @@ static int msm_vidc_init_data(struct msm_vidc_core *core)
 				ARRAY_SIZE(clock_data_diwali_v2);
 	}
 
-	if (platform_data->sku_version) {
-		sort(core->dt->allowed_clks_tbl, core->dt->allowed_clks_tbl_size,
-			sizeof(*core->dt->allowed_clks_tbl), cmp, NULL);
-		d_vpr_h("Updated allowed clock rates\n");
-		for (i = 0; i < core->dt->allowed_clks_tbl_size; i++)
-			d_vpr_h("    %d\n", core->dt->allowed_clks_tbl[i]);
-	}
+	if (platform_data->sku_version)
+		msm_vidc_sort_table(core);
 
 	/* Check for DDR variant */
 	msm_vidc_ddr_ubwc_config(&core->platform->data, 0xe);
