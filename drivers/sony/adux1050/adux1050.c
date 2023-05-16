@@ -3937,7 +3937,7 @@ static int adux1050_probe(struct i2c_client *client,
 
 	ADUX1050_LOG("%s called", __func__);
 
-	if ((client == NULL) || (&client->dev == NULL)) {
+	if (client == NULL) {
 		pr_err("%s: Client/client->dev doesn't exist\n", __func__);
 		return ret;
 	}
