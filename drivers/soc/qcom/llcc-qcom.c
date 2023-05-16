@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
- *
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/bitmap.h>
@@ -20,6 +20,8 @@
 
 #define ACTIVATE                      BIT(0)
 #define DEACTIVATE                    BIT(1)
+#define ACT_CLEAR                     BIT(0)
+#define ACT_COMPLETE                  BIT(4)
 #define ACT_CTRL_OPCODE_ACTIVATE      BIT(0)
 #define ACT_CTRL_OPCODE_DEACTIVATE    BIT(1)
 #define ACT_CTRL_ACT_TRIG             BIT(0)
@@ -42,6 +44,7 @@
 
 #define MAX_CAP_TO_BYTES(n)           (n * SZ_1K)
 #define LLCC_TRP_ACT_CTRLn(n)         (n * SZ_4K)
+#define LLCC_TRP_ACT_CLEARn(n)        (8 + n * SZ_4K)
 #define LLCC_TRP_STATUSn(n)           (4 + n * SZ_4K)
 #define LLCC_TRP_ATTR0_CFGn(n)        (0x21000 + SZ_8 * n)
 #define LLCC_TRP_ATTR1_CFGn(n)        (0x21004 + SZ_8 * n)
@@ -58,8 +61,43 @@
 
 #define LLCC_TRP_WRSC_EN              0x21F20
 #define LLCC_TRP_WRSC_CACHEABLE_EN    0x21F2C
-#define LLCC_TRP_PCB_ACT              0x21F04
 #define LLCC_TRP_SCID_DIS_CAP_ALLOC   0x21F00
+#define LLCC_TRP_PCB_ACT              0x21F04
+#define LLCC_TRP_ALGO_CFG1            0x21F0C // SCT_STALE_EN
+#define LLCC_TRP_ALGO_CFG2            0x21F10 // STALE_ONLY_ON_OC
+#define LLCC_TRP_ALGO_CFG3            0x21F14 // MRU_RO_ON_TWAYS_IF_UC
+#define LLCC_TRP_ALGO_CFG4            0x21F18 // MRU_ROLLOVER_ONLY_ON_TWAYS
+#define LLCC_TRP_ALGO_CFG5            0x21F1C // ALWAYS_ALLOC_ONE_WAY_ON_OC
+#define LLCC_TRP_ALGO_CFG6            0x21F24 // ALLOC_OTHER_OC_ON_OC
+#define LLCC_TRP_ALGO_CFG7            0x21F28 // ALLOC_OTHER_LP_OC_ON_OC
+#define LLCC_TRP_ALGO_CFG8            0x21F30 // ALLOC_VICTIM_PL_ON_UC
+
+#define FF_CLK_ON_OVERRIDE            BIT(1)
+#define FF_CLK_ON_OVERRIDE_VALUE      BIT(0)
+#define WAKEUP_ENABLE                 BIT(1)
+#define SLP_ENABLE                    BIT(0)
+#define WAKEUP_COMMAND                BIT(1)
+#define SLEEP_COMMAND                 BIT(0)
+#define SZ_7MB                        7168
+#define SZ_6MB                        6144
+#define ACTIVE_STATE                  0x0
+#define ACTIVE_STATE_7MB              0x0
+#define SLP_NRET_STATE                0xAAAAAAAA // SLEEP NON-RETENTION STATE
+#define SLP_NRET_STATE_7MB            0xAAAA
+
+#define SPAD_LPI_LB_FF_CLK_ON_CTRL    0x1254
+#define SPAD_LPI_LB_PCB_ENABLE        0x0034
+#define SPAD_LPI_LB_PCB_WAKEUP_SEL0   0x001C
+#define SPAD_LPI_LB_PCB_WAKEUP_SEL1   0x0020
+#define SPAD_LPI_LB_PCB_CMD           0x0048
+#define SPAD_LPI_LB_PCB_SLP_SEL0      0x000C
+#define SPAD_LPI_LB_PCB_SLP_SEL1      0x0014
+#define SPAD_LPI_LB_PCB_SLP_NRET_SEL0 0x0010
+#define SPAD_LPI_LB_PCB_SLP_NRET_SEL1 0x0018
+#define SPAD_LPI_LB_PCB_PWR_STATUS0   0x0054
+#define SPAD_LPI_LB_PCB_PWR_STATUS1   0x0058
+#define SPAD_LPI_LB_PCB_PWR_STATUS2   0x005C
+#define SPAD_LPI_LB_PCB_PWR_STATUS3   0x0060
 
 /**
  * llcc_slice_config - Data associated with the llcc slice
@@ -87,6 +125,17 @@
  * @write_scid_en: Enables write cache support for a given scid.
  * @write_scid_cacheable_en: Enables write cache cacheable support for a
  *                          given scid.(Not supported on V2 or older hardware)
+ * @stale_en: Enable global staling for the Clients.
+ * @stale_cap_en: Enable global staling on over capacity for the Clients
+ * @mru_uncap_en: Enable roll over on reserved ways if the current SCID is under capacity.
+ * @mru_rollover: Roll over on reserved ways for the client.
+ * @alloc_oneway_en: Always allocate one way on over capacity even if there
+ *			is no same scid lines for replacement.
+ * @ovcap_en: Once current scid is over capacity, allocate other over capacity scid.
+ * @ovcap_prio: Once current scid is over capacity, allocate other lower priority
+ *			over capacity scid. This setting is ignored if ovcap_en is not set.
+ * @vict_prio: When current SCID is under capacity, allocate over other lower than
+ *		VICTIM_PL_THRESHOLD priority SCID.
  */
 struct llcc_slice_config {
 	u32 usecase_id;
@@ -103,6 +152,14 @@ struct llcc_slice_config {
 	bool activate_on_init;
 	bool write_scid_en;
 	bool write_scid_cacheable_en;
+	bool stale_en;
+	bool stale_cap_en;
+	bool mru_uncap_en;
+	bool mru_rollover;
+	bool alloc_oneway_en;
+	bool ovcap_en;
+	bool ovcap_prio;
+	bool vict_prio;
 };
 
 static u32 llcc_offsets_v2[] = {
@@ -127,6 +184,13 @@ static u32 llcc_offsets_v21_diwali[] = {
 static u32 llcc_offsets_v31[] = {
 	0x0,
 	0x100000,
+};
+
+static u32 llcc_offsets_v41[] = {
+	0x0,
+	0x200000,
+	0x400000,
+	0x600000
 };
 
 enum {
@@ -221,24 +285,47 @@ static const struct llcc_slice_config shima_data[] =  {
 	{LLCC_WRTCH,    31,  256, 1, 1, 0xFFF, 0x0,   0, 0, 0, 0, 1, 0 },
 };
 
-static const struct llcc_slice_config neo_data[] =  {
-	{LLCC_CPUSS,     1,  8192, 1, 0, 0x3FFFFFFF, 0x0,   0, 0, 0, 1, 1, 0, 0 },
-	{LLCC_VIDSC0,    2,   192, 2, 1, 0x3FFFFFFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
-	{LLCC_AUDIO,     6,  3072, 3, 1, 0x3FFFFFFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
-	{LLCC_GPUHTW,   11,     0, 1, 1, 0x3FFFFFFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
-	{LLCC_GPU,      12,  1536, 2, 1, 0x3FFFFFFF, 0x0,   0, 0, 0, 1, 0, 1, 0 },
-	{LLCC_MMUHWT,   13,  1024, 1, 1, 0x3FFFFFFF, 0x0,   0, 0, 0, 0, 1, 0, 0 },
-	{LLCC_DISP,     16,     0, 2, 1, 0x3FFFFFFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
-	{LLCC_WRTCH,    31,   256, 1, 1, 0x3FFFFFFF, 0x0,   0, 0, 0, 0, 1, 0, 0 },
-	{LLCC_CAMEXP0,   4,  4096, 1, 1, 0x3FFFFFFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
-	{LLCC_VIEYE,     7,  7168, 4, 1, 0x3FFFFFFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
-	{LLCC_VIDPTH,    8,  7168, 4, 1, 0x3FFFFFFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
-	{LLCC_GPUMV,     9,  1024, 2, 1, 0x3FFFFFFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
-	{LLCC_EVALFT,   20,  7168, 5, 1, 0x3FFFFFFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
-	{LLCC_EVARGHT,  21,  7168, 5, 1, 0x3FFFFFFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
-	{LLCC_EVAGAIN,  25,  1024, 2, 1, 0x3FFFFFFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
-	{LLCC_AENPU,    30,  1024, 3, 1, 0x3FFFFFFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
-	{LLCC_VIPTH,    29,  1024, 2, 1, 0x3FFFFFFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
+static const struct llcc_slice_config neo_xr_data[] =  {
+	{LLCC_CPUSS,     1,  6144, 1, 0, 0x3FFFFFFF,  0x0,   0, 0, 0, 1, 1, 0, 0 },
+	{LLCC_VIDSC0,    2,   128, 2, 1, 0x3FFFFFFF,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_AUDIO,     6,  1024, 3, 1, 0x3FFFFFFF,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_CMPT,     10,  1024, 1, 1, 0x3FFFFFFF,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_GPUHTW,   11,     0, 1, 1, 0x3FFFFFFF,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_GPU,      12,  1536, 2, 1, 0x3FFFFFFF,  0x0,   0, 0, 0, 1, 0, 1, 0 },
+	{LLCC_MMUHWT,   13,  1024, 1, 1, 0x3FFFFFFF,  0x0,   0, 0, 0, 0, 1, 0, 0 },
+	{LLCC_APTCM,    26,  2048, 3, 1,        0x0,  0x3,   1, 0, 1, 1, 0, 0, 0 },
+	{LLCC_WRTCH,    31,   256, 1, 1, 0x3FFFFFFF,  0x0,   0, 0, 0, 0, 1, 0, 0 },
+	{LLCC_VIEYE,     7,  7168, 4, 1, 0x3FFFFFFF,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_VIDPTH,    8,  7168, 4, 1, 0x3FFFFFFF,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_GPUMV,     9,  2048, 2, 1, 0x3FFFFFFF,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_EVALFT,   20,  7168, 5, 1, 0x3FFFFFFC,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_EVARGHT,  21,  7168, 5, 1, 0x3FFFFFFC,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_EVAGAIN,  25,  1024, 2, 1, 0x3FFFFFFF,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_AENPU,    30,  3072, 3, 1, 0x3FFFFFFF,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_VIPTH,    29,  1024, 4, 1, 0x3FFFFFFF,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_DISLFT,   17,     0, 1, 1,        0x0,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_DISRGHT,  18,     0, 1, 1,        0x0,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_EVCSLFT,  22,     0, 1, 1,        0x0,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_EVCSRGHT, 23,     0, 1, 1,        0x0,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_SPAD,     24,  7168, 1, 1,        0x0,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+};
+
+static const struct llcc_slice_config neo_sg_data[] =  {
+	{LLCC_CPUSS,     1,  4096, 1, 0, 0x3FF,  0x0,   0, 0, 0, 1, 1, 0, 0 },
+	{LLCC_VIDSC0,    2,   512, 3, 1, 0x3FF,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_AUDIO,     6,  1024, 3, 1, 0x3FF,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_CMPT,     10,  1024, 1, 1, 0x3FF,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_GPUHTW,   11,     0, 1, 1, 0x3FF,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_GPU,      12,     0, 3, 1, 0x3FF,  0x0,   0, 0, 0, 1, 0, 1, 0 },
+	{LLCC_MMUHWT,   13,   512, 1, 1, 0x3FF,  0x0,   0, 0, 0, 0, 1, 0, 0 },
+	{LLCC_CVP,      28,   256, 3, 1, 0x3FF,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_APTCM,    26,  1024, 3, 1,   0x0,  0x1,   1, 0, 1, 1, 0, 0, 0 },
+	{LLCC_WRTCH,    31,   256, 1, 1, 0x3FF,  0x0,   0, 0, 0, 0, 1, 0, 0 },
+	{LLCC_AENPU,    30,  3072, 3, 1, 0x3FF,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_DISLFT,   17,     0, 1, 1,   0x0,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_DISRGHT,  18,     0, 1, 1,   0x0,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_EVCSLFT,  22,     0, 1, 1,   0x0,  0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_EVCSRGHT, 23,     0, 1, 1,   0x0,  0x0,   0, 0, 0, 1, 0, 0, 0 },
 };
 
 static const struct llcc_slice_config waipio_data[] =  {
@@ -294,17 +381,33 @@ static const struct llcc_slice_config cape_data[] =  {
 };
 
 static const struct llcc_slice_config diwali_data[] =  {
-	{LLCC_CPUSS,     1, 1536, 0, 1, 0x0FFF, 0x0,   0, 0, 0, 1, 1, 1, 0 },
-	{LLCC_VIDSC0,    2,  512, 3, 1, 0x0FFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_CPUSS,     1, 1536, 0, 1, 0x0FFF, 0x0,   0, 0, 0, 1, 1, 0, 0 },
+	{LLCC_VIDSC0,    2,  128, 3, 1, 0x0FFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
 	{LLCC_MDMHPGRW,  7,  512, 3, 1, 0x0FFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
 	{LLCC_GPUHTW,   11,  256, 1, 1, 0x0FFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
 	{LLCC_GPU,      12,  512, 1, 0, 0x0FFF, 0x0,   0, 0, 0, 1, 0, 1, 0 },
-	{LLCC_MMUHWT,   13,  256, 1, 1, 0x0FFF, 0x0,   0, 0, 0, 0, 1, 0, 0 },
-	{LLCC_DISP,     16, 1536, 2, 1, 0x0FFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_MMUHWT,   13,  256, 3, 1, 0x0FFF, 0x0,   0, 0, 0, 0, 1, 0, 0 },
+	{LLCC_DISP,     16, 1536, 1, 1, 0x0FFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
 	{LLCC_MDMPNG,   21, 1024, 0, 1, 0x0FFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
-	{LLCC_MDMVPE,   29,   64, 1, 1, 0x0FFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
+	{LLCC_MDMVPE,   29,   64, 3, 1, 0x0FFF, 0x0,   0, 0, 0, 1, 0, 0, 0 },
 	{LLCC_WRTCH,    31,  256, 1, 1, 0x0FFF, 0x0,   0, 0, 0, 0, 1, 0, 0 },
 	{LLCC_CPUMTE,   23,  256, 1, 1, 0x0FFF, 0x0,   0, 0, 0, 1, 1, 0, 0 },
+};
+
+static const struct llcc_slice_config anorak_data[] =  {
+	{LLCC_CPUSS,	1,  4096, 1, 1, 0xFFFFFFFF, 0x0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{LLCC_VIDSC0,	2,  512,  3, 1,	0xFFFFFFFF, 0x0, 0, 0, 0, 0, 0,	0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{LLCC_AUDIO,    6,  1024, 1, 1, 0xFFFFFFFF, 0x0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{LLCC_GPUHTW,	11, 1024, 1, 1,	0xFFFFFFFF, 0x0, 0, 0, 0, 0, 0,	0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{LLCC_GPU,	9, 5120, 1, 0,	0xFFFFFFFF, 0x0, 0, 0, 0, 0, 0,	1, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{LLCC_MMUHWT,	18, 768,  1, 1,	0xFFFFFFFF, 0x0, 0, 0, 0, 0, 1,	0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{LLCC_CVP,	28,  64,  3, 1,	0xFFFFFFFF, 0x0, 0, 0, 0, 0, 0,	0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{LLCC_WRTCH,	31, 512,  1, 1,	0xFFFFFFFF, 0x0, 0, 0, 0, 0, 1,	0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+};
+
+static const struct qcom_llcc_config anorak_cfg = {
+	.sct_data       = anorak_data,
+	.size           = ARRAY_SIZE(anorak_data),
 };
 
 static const struct qcom_llcc_config diwali_cfg = {
@@ -332,9 +435,14 @@ static const struct qcom_llcc_config shima_cfg = {
 	.size		= ARRAY_SIZE(shima_data),
 };
 
-static const struct qcom_llcc_config neo_cfg = {
-	.sct_data	= neo_data,
-	.size		= ARRAY_SIZE(neo_data),
+static const struct qcom_llcc_config neo_xr_cfg = {
+	.sct_data	= neo_xr_data,
+	.size		= ARRAY_SIZE(neo_xr_data),
+};
+
+static const struct qcom_llcc_config neo_sg_cfg = {
+	.sct_data	= neo_sg_data,
+	.size		= ARRAY_SIZE(neo_sg_data),
 };
 
 static const struct qcom_llcc_config waipio_cfg = {
@@ -394,6 +502,7 @@ static int llcc_update_act_ctrl(u32 sid,
 				u32 act_ctrl_reg_val, u32 status)
 {
 	u32 act_ctrl_reg;
+	u32 act_clear_reg;
 	u32 status_reg;
 	u32 slice_status;
 	int ret;
@@ -402,6 +511,7 @@ static int llcc_update_act_ctrl(u32 sid,
 		return PTR_ERR(drv_data);
 
 	act_ctrl_reg = LLCC_TRP_ACT_CTRLn(sid);
+	act_clear_reg = LLCC_TRP_ACT_CLEARn(sid);
 	status_reg = LLCC_TRP_STATUSn(sid);
 
 	/* Set the ACTIVE trigger */
@@ -418,10 +528,146 @@ static int llcc_update_act_ctrl(u32 sid,
 	if (ret)
 		return ret;
 
+	if (drv_data->llcc_ver >= 41) {
+		ret = regmap_read_poll_timeout(drv_data->bcast_regmap, status_reg,
+				      slice_status, (slice_status & ACT_COMPLETE),
+				      0, LLCC_STATUS_READ_DELAY);
+		if (ret)
+			return ret;
+	}
+
 	ret = regmap_read_poll_timeout(drv_data->bcast_regmap, status_reg,
 				      slice_status, !(slice_status & status),
 				      0, LLCC_STATUS_READ_DELAY);
+
+	if (drv_data->llcc_ver >= 41)
+		regmap_write(drv_data->bcast_regmap, act_clear_reg, ACT_CLEAR);
+
 	return ret;
+}
+
+static inline int llcc_spad_check_regmap(void)
+{
+	if (IS_ERR(drv_data->spad_or_bcast_regmap))
+		return PTR_ERR(drv_data->spad_or_bcast_regmap);
+	if (IS_ERR(drv_data->spad_and_bcast_regmap))
+		return PTR_ERR(drv_data->spad_and_bcast_regmap);
+	return 0;
+}
+
+static inline int llcc_spad_clk_on_ctrl(void)
+{
+	/* Clear FF_CLK_ON override and override value CSR */
+	return regmap_write(drv_data->spad_or_bcast_regmap,
+			    SPAD_LPI_LB_FF_CLK_ON_CTRL, 0);
+}
+
+static int llcc_spad_poll_state(struct llcc_slice_desc *desc, u32 s0, u32 s1)
+{
+	int ret;
+	u32 slice_status;
+
+	ret = regmap_read_poll_timeout(drv_data->spad_and_bcast_regmap,
+				       SPAD_LPI_LB_PCB_PWR_STATUS0,
+				       slice_status,
+				       (slice_status == s0),
+				       0, LLCC_STATUS_READ_DELAY);
+	if (ret)
+		return ret;
+	ret = regmap_read_poll_timeout(drv_data->spad_and_bcast_regmap,
+				       SPAD_LPI_LB_PCB_PWR_STATUS1,
+				       slice_status,
+				       (slice_status == s0),
+				       0, LLCC_STATUS_READ_DELAY);
+	if (ret)
+		return ret;
+	ret = regmap_read_poll_timeout(drv_data->spad_and_bcast_regmap,
+				       SPAD_LPI_LB_PCB_PWR_STATUS2,
+				       slice_status,
+				       (slice_status == s0),
+				       0, LLCC_STATUS_READ_DELAY);
+	if (ret)
+		return ret;
+	/* For all instances of 7MB per scratchpad */
+	if (desc->slice_size == SZ_7MB) {
+		ret = regmap_read_poll_timeout(drv_data->spad_and_bcast_regmap,
+					       SPAD_LPI_LB_PCB_PWR_STATUS3,
+					       slice_status,
+					       (slice_status == s1),
+					       0, LLCC_STATUS_READ_DELAY);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+static int llcc_spad_init(struct llcc_slice_desc *desc)
+{
+	int ret;
+	u32 lpi_reg;
+	u32 lpi_val;
+
+	/* FF clock will be on as during initialization the
+	 * following CSR will be 1
+	 */
+	lpi_reg = SPAD_LPI_LB_FF_CLK_ON_CTRL;
+	lpi_val = FF_CLK_ON_OVERRIDE | FF_CLK_ON_OVERRIDE_VALUE;
+	ret = regmap_write(drv_data->spad_or_bcast_regmap, lpi_reg,
+			   lpi_val);
+	if (ret)
+		return ret;
+
+	/* Activity based sleep/wakeup CSRs should be tied to 0 as
+	 * activity based sleep/wkup is mutually exclusive to CSR
+	 * based sleep and wakeup.
+	 */
+	lpi_reg = SPAD_LPI_LB_PCB_ENABLE;
+	lpi_val = 0;
+	ret = regmap_write(drv_data->spad_or_bcast_regmap, lpi_reg,
+			   lpi_val);
+	if (ret)
+		return ret;
+
+	/* Schedule Wakeup for all PCBs */
+	lpi_reg = SPAD_LPI_LB_PCB_WAKEUP_SEL0;
+	lpi_val = 0xFFFFFFFF;
+	ret = regmap_write(drv_data->spad_or_bcast_regmap, lpi_reg,
+			   lpi_val);
+	if (ret)
+		return ret;
+	lpi_reg = SPAD_LPI_LB_PCB_WAKEUP_SEL1;
+	/* For all instances of 7MB per scratchpad */
+	if (desc->slice_size == SZ_7MB)
+		lpi_val = 0xFFFFFF;
+	/* For all instances of 6MB per scratchpad */
+	else if (desc->slice_size == SZ_6MB)
+		lpi_val = 0x00FFFF;
+	ret = regmap_write(drv_data->spad_or_bcast_regmap, lpi_reg,
+			   lpi_val);
+	if (ret)
+		return ret;
+
+	lpi_reg = SPAD_LPI_LB_PCB_CMD;
+	lpi_val = WAKEUP_COMMAND;
+	ret = regmap_write(drv_data->spad_or_bcast_regmap, lpi_reg,
+			   lpi_val);
+	if (ret)
+		return ret;
+
+	/* Wait for PCB wakeup to complete */
+	ret = llcc_spad_poll_state(desc, ACTIVE_STATE,
+				   ACTIVE_STATE_7MB);
+	if (ret)
+		return ret;
+
+	/* Clear wakeup command after all scheduled wakeups are done */
+	lpi_reg = SPAD_LPI_LB_PCB_CMD;
+	lpi_val = 0;
+	ret = regmap_write(drv_data->spad_or_bcast_regmap, lpi_reg,
+			   lpi_val);
+	if (ret)
+		return ret;
+	return 0;
 }
 
 /**
@@ -453,20 +699,31 @@ int llcc_slice_activate(struct llcc_slice_desc *desc)
 		mutex_unlock(&drv_data->lock);
 		return 0;
 	}
+	if (!PTR_ERR_OR_ZERO(llcc_slice_getd(LLCC_SPAD)) &&
+	    desc->slice_id == llcc_slice_getd(LLCC_SPAD)->slice_id) {
+		ret = llcc_spad_check_regmap();
+		if (ret)
+			goto act_err;
 
-	act_ctrl_val = ACT_CTRL_OPCODE_ACTIVATE << ACT_CTRL_OPCODE_SHIFT;
+		ret = llcc_spad_init(desc);
+		if (ret)
+			goto act_err;
 
-	ret = llcc_update_act_ctrl(desc->slice_id, act_ctrl_val,
-				  DEACTIVATE);
-	if (ret) {
-		mutex_unlock(&drv_data->lock);
-		return ret;
+		ret = llcc_spad_clk_on_ctrl();
+		if (ret)
+			goto act_err;
+	} else {
+		act_ctrl_val = ACT_CTRL_OPCODE_ACTIVATE << ACT_CTRL_OPCODE_SHIFT;
+
+		ret = llcc_update_act_ctrl(desc->slice_id, act_ctrl_val,
+					   DEACTIVATE);
+		if (ret)
+			goto act_err;
 	}
-
 	atomic_inc_return(&desc->refcount);
 	__set_bit(desc->slice_id, drv_data->bitmap);
+act_err:
 	mutex_unlock(&drv_data->lock);
-
 	return ret;
 }
 EXPORT_SYMBOL_GPL(llcc_slice_activate);
@@ -480,8 +737,10 @@ EXPORT_SYMBOL_GPL(llcc_slice_activate);
  */
 int llcc_slice_deactivate(struct llcc_slice_desc *desc)
 {
-	u32 act_ctrl_val;
 	int ret;
+	u32 act_ctrl_val;
+	u32 lpi_reg;
+	u32 lpi_val;
 
 	if (IS_ERR(drv_data))
 		return PTR_ERR(drv_data);
@@ -500,19 +759,91 @@ int llcc_slice_deactivate(struct llcc_slice_desc *desc)
 		mutex_unlock(&drv_data->lock);
 		return 0;
 	}
-	act_ctrl_val = ACT_CTRL_OPCODE_DEACTIVATE << ACT_CTRL_OPCODE_SHIFT;
+	if (!PTR_ERR_OR_ZERO(llcc_slice_getd(LLCC_SPAD)) &&
+	    desc->slice_id == llcc_slice_getd(LLCC_SPAD)->slice_id) {
+		ret = llcc_spad_check_regmap();
+		if (ret)
+			goto deact_err;
 
-	ret = llcc_update_act_ctrl(desc->slice_id, act_ctrl_val,
-				  ACTIVATE);
-	if (ret) {
-		mutex_unlock(&drv_data->lock);
-		return ret;
+		ret = llcc_spad_init(desc);
+		if (ret)
+			goto deact_err;
+
+		/* Schedule non retention sleep for all PCBs in scratchpad */
+		lpi_reg = SPAD_LPI_LB_PCB_SLP_SEL0;
+		lpi_val = 0xFFFFFFFF;
+		ret = regmap_write(drv_data->spad_or_bcast_regmap, lpi_reg,
+				   lpi_val);
+		if (ret)
+			goto deact_err;
+
+		lpi_reg = SPAD_LPI_LB_PCB_SLP_SEL1;
+		/* For all instances of 7MB per scratchpad */
+		if (desc->slice_size == SZ_7MB)
+			lpi_val = 0xFFFFFF;
+		/* For all instances of 6MB per scratchpad */
+		else if (desc->slice_size == SZ_6MB)
+			lpi_val = 0x00FFFF;
+		ret = regmap_write(drv_data->spad_or_bcast_regmap, lpi_reg,
+				   lpi_val);
+		if (ret)
+			goto deact_err;
+
+		lpi_reg = SPAD_LPI_LB_PCB_SLP_NRET_SEL0;
+		lpi_val = 0xFFFFFFFF;
+		ret = regmap_write(drv_data->spad_or_bcast_regmap, lpi_reg,
+				   lpi_val);
+		if (ret)
+			goto deact_err;
+
+		lpi_reg = SPAD_LPI_LB_PCB_SLP_NRET_SEL1;
+		/* For all instances of 7MB per scratchpad */
+		if (desc->slice_size == SZ_7MB)
+			lpi_val = 0xFFFFFF;
+		/* For all instances of 6MB per scratchpad */
+		else if (desc->slice_size == SZ_6MB)
+			lpi_val = 0x00FFFF;
+		ret = regmap_write(drv_data->spad_or_bcast_regmap, lpi_reg,
+				   lpi_val);
+		if (ret)
+			goto deact_err;
+
+		lpi_reg = SPAD_LPI_LB_PCB_CMD;
+		lpi_val = SLEEP_COMMAND;
+		ret = regmap_write(drv_data->spad_or_bcast_regmap, lpi_reg,
+				   lpi_val);
+		if (ret)
+			goto deact_err;
+
+		/* Wait for PCB Sleep to complete */
+		ret = llcc_spad_poll_state(desc, SLP_NRET_STATE,
+					   SLP_NRET_STATE_7MB);
+		if (ret)
+			goto deact_err;
+
+		/* Clear wakeup Command after all scheduled wakeups are finished */
+		lpi_reg = SPAD_LPI_LB_PCB_CMD;
+		lpi_val = 0;
+		ret = regmap_write(drv_data->spad_or_bcast_regmap, lpi_reg,
+				   lpi_val);
+		if (ret)
+			goto deact_err;
+
+		ret = llcc_spad_clk_on_ctrl();
+		if (ret)
+			goto deact_err;
+	} else {
+		act_ctrl_val = ACT_CTRL_OPCODE_DEACTIVATE << ACT_CTRL_OPCODE_SHIFT;
+
+		ret = llcc_update_act_ctrl(desc->slice_id, act_ctrl_val,
+					   ACTIVATE);
+		if (ret)
+			goto deact_err;
 	}
-
 	atomic_set(&desc->refcount, 0);
 	__clear_bit(desc->slice_id, drv_data->bitmap);
+deact_err:
 	mutex_unlock(&drv_data->lock);
-
 	return ret;
 }
 EXPORT_SYMBOL_GPL(llcc_slice_deactivate);
@@ -549,9 +880,9 @@ static int qcom_llcc_cfg_program(struct platform_device *pdev)
 	u32 attr2_cfg;
 	u32 attr1_cfg;
 	u32 attr0_cfg;
+	u32 attr2_val;
 	u32 attr1_val;
 	u32 attr0_val;
-	u32 attr2_val;
 	u32 max_cap_cacheline;
 	u32 sz;
 	u32 pcb = 0;
@@ -589,13 +920,18 @@ static int qcom_llcc_cfg_program(struct platform_device *pdev)
 
 		/* LLCC instances can vary for each target.
 		 * The SW writes to broadcast register which gets propagated
-		 * to each llcc instace (llcc0,.. llccN).
+		 * to each llcc instance (llcc0,.. llccN).
 		 * Since the size of the memory is divided equally amongst the
 		 * llcc instances, we need to configure the max cap accordingly.
 		 */
 		max_cap_cacheline = max_cap_cacheline / drv_data->num_banks;
 		max_cap_cacheline >>= CACHE_LINE_SIZE_SHIFT;
-		if (drv_data->llcc_ver >= 31) {
+		if (drv_data->llcc_ver >= 41) {
+			attr1_val |= max_cap_cacheline << ATTR1_MAX_CAP_SHIFT;
+			attr2_cfg = LLCC_TRP_ATTR2_CFGn(llcc_table[i].slice_id);
+			attr0_val = llcc_table[i].res_ways;
+			attr2_val = llcc_table[i].bonus_ways;
+		} else if (drv_data->llcc_ver >= 31) {
 			attr1_val |=
 				max_cap_cacheline << ATTR1_MAX_CAP_SHIFT_v31;
 			attr2_cfg =
@@ -619,7 +955,6 @@ static int qcom_llcc_cfg_program(struct platform_device *pdev)
 					attr0_val);
 		if (ret)
 			return ret;
-
 		if (drv_data->llcc_ver >= 31) {
 			ret = regmap_write(drv_data->bcast_regmap, attr2_cfg,
 					attr2_val);
@@ -653,10 +988,62 @@ static int qcom_llcc_cfg_program(struct platform_device *pdev)
 			if (ret)
 				return ret;
 
-			pcb |= llcc_table[i].retain_on_pc <<
-					llcc_table[i].slice_id;
+			if (drv_data->llcc_ver < 41) {
+				pcb |= llcc_table[i].retain_on_pc <<
+						llcc_table[i].slice_id;
+				ret = regmap_write(drv_data->bcast_regmap,
+							LLCC_TRP_PCB_ACT, pcb);
+				if (ret)
+					return ret;
+			}
+		}
+
+		if (drv_data->llcc_ver >= 41) {
 			ret = regmap_write(drv_data->bcast_regmap,
-						LLCC_TRP_PCB_ACT, pcb);
+					LLCC_TRP_ALGO_CFG1,
+					(llcc_table[i].stale_en << llcc_table[i].slice_id));
+			if (ret)
+				return ret;
+
+			ret = regmap_write(drv_data->bcast_regmap,
+					LLCC_TRP_ALGO_CFG2,
+					(llcc_table[i].stale_cap_en << llcc_table[i].slice_id));
+			if (ret)
+				return ret;
+
+			ret = regmap_write(drv_data->bcast_regmap,
+					LLCC_TRP_ALGO_CFG3,
+					(llcc_table[i].mru_uncap_en << llcc_table[i].slice_id));
+			if (ret)
+				return ret;
+
+			ret = regmap_write(drv_data->bcast_regmap,
+					LLCC_TRP_ALGO_CFG4,
+					(llcc_table[i].mru_rollover << llcc_table[i].slice_id));
+			if (ret)
+				return ret;
+
+			ret = regmap_write(drv_data->bcast_regmap,
+					LLCC_TRP_ALGO_CFG5,
+					(llcc_table[i].alloc_oneway_en << llcc_table[i].slice_id));
+			if (ret)
+				return ret;
+
+			ret = regmap_write(drv_data->bcast_regmap,
+					LLCC_TRP_ALGO_CFG6,
+					(llcc_table[i].ovcap_en << llcc_table[i].slice_id));
+			if (ret)
+				return ret;
+
+			ret = regmap_write(drv_data->bcast_regmap,
+					LLCC_TRP_ALGO_CFG7,
+					(llcc_table[i].ovcap_prio << llcc_table[i].slice_id));
+			if (ret)
+				return ret;
+
+			ret = regmap_write(drv_data->bcast_regmap,
+					LLCC_TRP_ALGO_CFG8,
+					(llcc_table[i].vict_prio << llcc_table[i].slice_id));
 			if (ret)
 				return ret;
 		}
@@ -711,7 +1098,8 @@ static int qcom_llcc_probe(struct platform_device *pdev)
 	struct platform_device *llcc_edac;
 	const struct qcom_llcc_config *cfg;
 	const struct llcc_slice_config *llcc_cfg;
-	u32 sz;
+	void __iomem *ch_reg = NULL;
+	u32 sz, ch_reg_sz, ch_reg_off, ch_num;
 
 	drv_data = devm_kzalloc(dev, sizeof(*drv_data), GFP_KERNEL);
 	if (!drv_data) {
@@ -732,7 +1120,19 @@ static int qcom_llcc_probe(struct platform_device *pdev)
 		goto err;
 	}
 
+	drv_data->spad_or_bcast_regmap =
+		qcom_llcc_init_mmio(pdev, "spad_or_broadcast_base");
+
+	drv_data->spad_and_bcast_regmap =
+		qcom_llcc_init_mmio(pdev, "spad_and_broadcast_base");
+
 	if (of_property_match_string(dev->of_node,
+				    "compatible", "qcom,llcc-v41") >= 0) {
+		drv_data->llcc_ver = 41;
+		llcc_regs = llcc_regs_v21;
+		drv_data->offsets = llcc_offsets_v41;
+		drv_data->num_banks = ARRAY_SIZE(llcc_offsets_v41);
+	} else if (of_property_match_string(dev->of_node,
 				    "compatible", "qcom,llcc-v31") >= 0) {
 		drv_data->llcc_ver = 31;
 		llcc_regs = llcc_regs_v21;
@@ -764,8 +1164,31 @@ static int qcom_llcc_probe(struct platform_device *pdev)
 		goto err;
 	}
 
-	llcc_cfg = cfg->sct_data;
-	sz = cfg->size;
+	ch_reg = devm_platform_ioremap_resource_byname(pdev, "multi_ch_reg");
+	if (!IS_ERR(ch_reg)) {
+		if (of_property_read_u32_index(dev->of_node, "multi-ch-off", 1, &ch_reg_sz)) {
+			dev_err(&pdev->dev,
+				"Couldn't get size of multi channel feature register\n");
+			ret = -ENODEV;
+			goto err;
+		}
+
+		if (of_property_read_u32(dev->of_node, "multi-ch-off", &ch_reg_off))
+			ch_reg_off = 0;
+
+		ch_num = readl_relaxed(ch_reg);
+		ch_num = (ch_num >> ch_reg_off) & ((1 << ch_reg_sz) - 1);
+
+		drv_data->cfg_index = ch_num;
+		llcc_cfg = cfg[ch_num].sct_data;
+		sz = cfg[ch_num].size;
+
+		devm_iounmap(dev, ch_reg);
+		ch_reg = NULL;
+	} else {
+		llcc_cfg = cfg->sct_data;
+		sz = cfg->size;
+	}
 
 	drv_data->desc = devm_kzalloc(dev, sizeof(struct llcc_slice_desc)*sz, GFP_KERNEL);
 	if (IS_ERR_OR_NULL(drv_data->desc)) {
@@ -821,10 +1244,12 @@ static const struct of_device_id qcom_llcc_of_match[] = {
 	{ .compatible = "qcom,sdm845-llcc", .data = &sdm845_cfg },
 	{ .compatible = "qcom,lahaina-llcc", .data = &lahaina_cfg },
 	{ .compatible = "qcom,shima-llcc", .data = &shima_cfg },
-	{ .compatible = "qcom,neo-llcc", .data = &neo_cfg },
+	{ .compatible = "qcom,neo-xr-llcc", .data = &neo_xr_cfg },
+	{ .compatible = "qcom,neo-sg-llcc", .data = &neo_sg_cfg },
 	{ .compatible = "qcom,waipio-llcc", .data = &waipio_cfg },
 	{ .compatible = "qcom,diwali-llcc", .data = &diwali_cfg },
 	{ .compatible = "qcom,cape-llcc", .data = &cape_cfg },
+	{ .compatible = "qcom,anorak-llcc", .data = &anorak_cfg },
 	{ }
 };
 

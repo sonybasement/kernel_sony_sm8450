@@ -131,8 +131,8 @@ int btfm_slim_enable_ch(struct btfmslim *btfmslim, struct btfmslim_ch *ch,
 				goto error;
 			}
 		}
-		chan->dai.sconfig.chs[i] = chan->ch;
-		chan->dai.sconfig.port_mask |= BIT(chan->port);
+		chan->dai.sconfig.chs[i] = ch->ch;
+		chan->dai.sconfig.port_mask |= BIT(ch->port);
 	}
 
 	/* Activate the channel immediately */
@@ -401,6 +401,35 @@ int btfm_slim_hw_init(struct btfmslim *btfmslim)
 		chipset_ver ==  QCA_HAMILTON_SOC_ID_0101 ||
 		chipset_ver ==  QCA_HAMILTON_SOC_ID_0200) {
 		BTFMSLIM_INFO("chipset is Hamliton, overwriting EA");
+		slim->is_laddr_valid = false;
+		slim->e_addr.manf_id = SLIM_MANF_ID_QCOM;
+		slim->e_addr.prod_code = 0x220;
+		slim->e_addr.dev_index = 0x01;
+		slim->e_addr.instance = 0x0;
+		/* we are doing this to indicate that this is not a child node
+		 * (doesn't have call back functions). Needed only for querying
+		 * logical address.
+		 */
+		slim_ifd->dev.driver = NULL;
+		slim_ifd->ctrl = btfmslim->slim_pgd->ctrl; //slimbus controller structure.
+		slim_ifd->is_laddr_valid = false;
+		slim_ifd->e_addr.manf_id = SLIM_MANF_ID_QCOM;
+		slim_ifd->e_addr.prod_code = 0x220;
+		slim_ifd->e_addr.dev_index = 0x0;
+		slim_ifd->e_addr.instance = 0x0;
+		slim_ifd->laddr = 0x0;
+	} else if (chipset_ver == QCA_CHEROKEE_SOC_ID_0200 ||
+		chipset_ver ==  QCA_CHEROKEE_SOC_ID_0201  ||
+		chipset_ver ==  QCA_CHEROKEE_SOC_ID_0210  ||
+		chipset_ver ==  QCA_CHEROKEE_SOC_ID_0211  ||
+		chipset_ver ==  QCA_CHEROKEE_SOC_ID_0310  ||
+		chipset_ver ==  QCA_CHEROKEE_SOC_ID_0320  ||
+		chipset_ver ==  QCA_CHEROKEE_SOC_ID_0320_UMC  ||
+		chipset_ver ==  QCA_APACHE_SOC_ID_0100  ||
+		chipset_ver ==  QCA_APACHE_SOC_ID_0110  ||
+		chipset_ver ==  QCA_APACHE_SOC_ID_0120 ||
+		chipset_ver ==  QCA_APACHE_SOC_ID_0121) {
+		BTFMSLIM_INFO("chipset is Chk/Apache, overwriting EA");
 		slim->is_laddr_valid = false;
 		slim->e_addr.manf_id = SLIM_MANF_ID_QCOM;
 		slim->e_addr.prod_code = 0x220;

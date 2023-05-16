@@ -19,7 +19,7 @@
 #include "reset.h"
 #include "vdd-level.h"
 
-static DEFINE_VDD_REGULATORS(vdd_cx, VDD_HIGH_L1 + 1, 1, vdd_corner);
+static DEFINE_VDD_REGULATORS(vdd_cx, VDD_NOMINAL + 1, 1, vdd_corner);
 static DEFINE_VDD_REGULATORS(vdd_mxa, VDD_NOMINAL + 1, 1, vdd_corner);
 
 static struct clk_vdd_class *gpu_cc_neo_regulators[] = {
@@ -309,7 +309,7 @@ static struct clk_branch gpu_cc_cx_gmu_clk = {
 				&gpu_cc_gmu_clk_src.clkr.hw,
 			},
 			.num_parents = 1,
-			.flags = CLK_SET_RATE_PARENT,
+			.flags = CLK_SET_RATE_PARENT | CLK_DONT_HOLD_STATE,
 			.ops = &clk_branch2_aon_ops,
 		},
 	},
@@ -336,6 +336,7 @@ static struct clk_branch gpu_cc_cxo_clk = {
 		.enable_mask = BIT(0),
 		.hw.init = &(struct clk_init_data){
 			.name = "gpu_cc_cxo_clk",
+			.flags = CLK_DONT_HOLD_STATE,
 			.ops = &clk_branch2_ops,
 		},
 	},
@@ -389,7 +390,7 @@ static struct clk_branch gpu_cc_hub_cx_int_clk = {
 				&gpu_cc_hub_clk_src.clkr.hw,
 			},
 			.num_parents = 1,
-			.flags = CLK_SET_RATE_PARENT,
+			.flags = CLK_SET_RATE_PARENT | CLK_DONT_HOLD_STATE,
 			.ops = &clk_branch2_aon_ops,
 		},
 	},
@@ -487,6 +488,11 @@ static int gpu_cc_neo_probe(struct platform_device *pdev)
 
 	clk_lucid_ole_pll_configure(&gpu_cc_pll0, regmap, &gpu_cc_pll0_config);
 	clk_lucid_ole_pll_configure(&gpu_cc_pll1, regmap, &gpu_cc_pll1_config);
+
+	/*Keep the clock always-ON
+	 * gpu_cc_demet_clk
+	 */
+	regmap_update_bits(regmap, 0x0900C, BIT(0), BIT(0));
 
 	ret = qcom_cc_really_probe(pdev, &gpu_cc_neo_desc, regmap);
 	if (ret) {

@@ -697,7 +697,7 @@ config QCOM_MEM_HOOKS
 
 config QCOM_GLINK_PKT
 	tristate "Enable device interface for GLINK packet channels"
-	depends on RPMSG_QCOM_GLINK_SMEM
+	depends on RPMSG_QCOM_GLINK_SMEM || RPMSG_QCOM_GLINK_HELIOSCOM
 	help
 	  G-link packet driver provides the interface for the userspace
 	  clients to communicate over G-Link via device nodes.
@@ -879,6 +879,19 @@ config QTI_PLH_SCMI_CLIENT
 	  This driver deliver the PLH vendor protocol handle to interface
 	  driver, and interface driver will use this handle to communicate
 	  with RIMPS PLH.
+
+config QTI_GPLAF_SCMI_CLIENT
+	tristate "Qualcomm Technologies Inc. SCMI client driver for GPLAF"
+	depends on MSM_PERFORMANCE && QTI_SCMI_GPLAF_PROTOCOL
+	default n
+	help
+	  SCMI client driver registers itself with SCMI framework for GPLAF
+	  vendor protocol, and also registers with the gplaf interface driver
+	  msm_performance.
+
+	  This driver deliver the GPLAF vendor protocol handle to interface
+	  driver, and interface driver will use this handle to communicate
+	  with RIMPS GPLAF.
 
 config QCOM_SUBSYSTEM_SLEEP_STATS
 	tristate "Qualcomm Technologies, Inc. Subsystem sleep stats driver"
@@ -1201,6 +1214,21 @@ config QCOM_BALANCE_ANON_FILE_RECLAIM
 	  equally.
 	  Swapping anonymous pages out to memory can be efficient enough to justify
 	  treating anonymous and file backed pages equally.
+config MSM_HELIOSCOM
+        tristate "Provide APIs to communicate with Helios chipset"
+        help
+                HELIOSCOM is a thin layer above SPI. It is used whithin a SoC for
+                communication between G-Link/helios_com_dev and Helios processor over SPI.
+                This handle the interrupts raised by BG and notify the G-link with
+                interrupt event and event data.
+config MSM_HELIOSCOM_INTERFACE
+        tristate "Driver support for Slate Communication"
+        depends on MSM_HELIOSCOM
+        help
+                Create a helios_com_dev device node for user space communication.
+                Single user space client can open device node for communication
+                from hardware. Hardware will provide access to read
+                registers and read/write AHB memory in the device.
 
 config QTI_OEMVM_CORE_CTL
 	tristate "OEMVM CPU control scheme for Hypervisor"

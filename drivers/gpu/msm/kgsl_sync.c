@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2012-2019, 2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/file.h>
@@ -324,7 +325,7 @@ int kgsl_sync_timeline_create(struct kgsl_context *context)
 
 	kref_init(&ktimeline->kref);
 	snprintf(ktimeline->name, sizeof(ktimeline->name),
-		"%s_%d-%.15s(%d)-%.15s(%d)",
+		"%s_%u-%.15s(%d)-%.15s(%d)",
 		context->device->name, context->id,
 		current->group_leader->comm, current->group_leader->pid,
 		current->comm, current->pid);
@@ -446,7 +447,7 @@ static void kgsl_get_fence_names(struct dma_fence *fence,
 	}
 
 	info_ptr->fences = kcalloc(num_fences, sizeof(struct fence_info),
-			GFP_ATOMIC);
+			GFP_KERNEL);
 	if (info_ptr->fences == NULL)
 		return;
 
@@ -482,7 +483,7 @@ struct kgsl_sync_fence_cb *kgsl_sync_fence_async_wait(int fd,
 		return ERR_PTR(-EINVAL);
 
 	/* create the callback */
-	kcb = kzalloc(sizeof(*kcb), GFP_ATOMIC);
+	kcb = kzalloc(sizeof(*kcb), GFP_KERNEL);
 	if (kcb == NULL) {
 		dma_fence_put(fence);
 		return ERR_PTR(-ENOMEM);

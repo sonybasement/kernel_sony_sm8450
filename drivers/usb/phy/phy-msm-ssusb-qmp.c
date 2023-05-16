@@ -54,6 +54,8 @@ enum core_ldo_levels {
 #define SW_PORTSELECT		BIT(0)
 /* port select mux: 1 - sw control. 0 - HW control*/
 #define SW_PORTSELECT_MX	BIT(1)
+/* port select polarity: 1 - invert polarity of portselect from gpio */
+#define PORTSELECT_POLARITY	BIT(2)
 
 /* USB3_DP_PHY_USB3_DP_COM_SWI_CTRL bits */
 
@@ -161,7 +163,6 @@ enum qmp_phy_type {
 struct qmp_reg_val {
 	u32 offset;
 	u32 val;
-	u32 delay;
 };
 
 struct msm_ssphy_qmp {
@@ -177,6 +178,7 @@ struct msm_ssphy_qmp {
 	struct regulator	*core_ldo;
 	int			core_voltage_levels[3];
 	int			core_max_uA;
+	struct regulator	*usb3_dp_phy_gdsc;
 	struct clk		*ref_clk_src;
 	struct clk		*ref_clk;
 	struct clk		*aux_clk;
@@ -196,6 +198,7 @@ struct msm_ssphy_qmp {
 	int			reg_offset_cnt;
 	u32			*qmp_phy_init_seq;
 	int			init_seq_len;
+	bool			invert_ps_polarity;
 	enum qmp_phy_type	phy_type;
 	bool			rxa_equ_tuning_manual;
 	bool			rxb_equ_tuning_manual;
@@ -290,6 +293,24 @@ static void msm_ssusb_qmp_enable_autonomous(struct msm_ssphy_qmp *phy,
 	}
 }
 
+static int msm_ssusb_qmp_gdsc(struct msm_ssphy_qmp *phy, bool on)
+{
+	int ret;
+
+	if (IS_ERR_OR_NULL(phy->usb3_dp_phy_gdsc))
+		return 0;
+
+	if (on)
+		ret = regulator_enable(phy->usb3_dp_phy_gdsc);
+	else
+		ret = regulator_disable(phy->usb3_dp_phy_gdsc);
+
+	if (ret)
+		dev_err(phy->phy.dev, "err:%d fail to %s usb3_dp_phy_gdsc\n",
+				ret, on ? "enable" : "disable");
+	return ret;
+}
+
 static int msm_ssusb_qmp_ldo_enable(struct msm_ssphy_qmp *phy, int on)
 {
 	int min, rc = 0;
@@ -309,10 +330,14 @@ static int msm_ssusb_qmp_ldo_enable(struct msm_ssphy_qmp *phy, int on)
 	if (!on)
 		goto disable_regulators;
 
+	rc = msm_ssusb_qmp_gdsc(phy, true);
+	if (rc < 0)
+		return rc;
+
 	rc = regulator_set_load(phy->vdd, phy->vdd_max_uA);
 	if (rc < 0) {
 		dev_err(phy->phy.dev, "Unable to set HPM of %s\n", "vdd");
-		return rc;
+		goto put_gdsc;
 	}
 
 	rc = regulator_set_voltage(phy->vdd, phy->vdd_levels[min],
@@ -388,6 +413,8 @@ put_vdd_lpm:
 	if (rc < 0)
 		dev_err(phy->phy.dev, "Unable to set LPM of %s\n", "vdd");
 
+put_gdsc:
+	rc = msm_ssusb_qmp_gdsc(phy, false);
 	return rc < 0 ? rc : 0;
 }
 
@@ -396,16 +423,15 @@ static int configure_phy_regs(struct usb_phy *uphy,
 {
 	struct msm_ssphy_qmp *phy = container_of(uphy, struct msm_ssphy_qmp,
 					phy);
+	int i;
 
 	if (!reg) {
 		dev_err(uphy->dev, "NULL PHY configuration\n");
 		return -EINVAL;
 	}
 
-	while (reg->offset != -1) {
+	for (i = 0; i < phy->init_seq_len/2; i++) {
 		writel_relaxed(reg->val, phy->base + reg->offset);
-		if (reg->delay)
-			usleep_range(reg->delay, reg->delay + 10);
 		reg++;
 	}
 	return 0;
@@ -438,6 +464,14 @@ static void usb_qmp_update_portselect_phymode(struct msm_ssphy_qmp *phy)
 
 	switch (phy->phy_type) {
 	case USB3_AND_DP:
+		/*
+		 * if port select inversion is enabled, enable it only for the input to the PHY.
+		 * The lane selection based on PHY flags will not get affected.
+		 */
+		if (val < 0 && phy->invert_ps_polarity)
+			writel_relaxed(PORTSELECT_POLARITY,
+				phy->base + phy->phy_reg[USB3_DP_COM_TYPEC_CTRL]);
+
 		writel_relaxed(0x01,
 			phy->base + phy->phy_reg[USB3_DP_COM_SW_RESET]);
 		writel_relaxed(0x00,
@@ -1326,10 +1360,18 @@ static int msm_ssphy_qmp_probe(struct platform_device *pdev)
 		goto err;
 	}
 
-	phy->rxa_equ_tuning_manual = of_property_read_bool(dev->of_node,
-						"rxa-equ-tuning-manual");
-	phy->rxb_equ_tuning_manual = of_property_read_bool(dev->of_node,
-						"rxb-equ-tuning-manual");
+	phy->usb3_dp_phy_gdsc = devm_regulator_get(dev, "usb3_dp_phy_gdsc");
+	if (IS_ERR(phy->usb3_dp_phy_gdsc)) {
+		ret = PTR_ERR(phy->usb3_dp_phy_gdsc);
+		if (ret != -ENODEV) {
+			dev_err(dev, "fail to get usb3_dp_phy_gdsc(%d)\n", ret);
+			return ret;
+		}
+		dev_err(dev, "usb3_dp_phy_gdsc optional regulator missing\n");
+	}
+
+	phy->invert_ps_polarity = of_property_read_bool(dev->of_node,
+					"qcom,invert-ps-polarity");
 
 	platform_set_drvdata(pdev, phy);
 

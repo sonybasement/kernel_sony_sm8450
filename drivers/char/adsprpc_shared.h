@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #ifndef ADSPRPC_SHARED_H
 #define ADSPRPC_SHARED_H
@@ -145,15 +146,6 @@ do {\
 	} \
 } while (0)
 #endif
-
-#define K_COPY_TO_USER_WITHOUT_ERR(kernel, dst, src, size) \
-	do {\
-		if (!(kernel))\
-			copy_to_user((void __user *)(dst),\
-			(src), (size));\
-		else\
-			memmove((dst), (src), (size));\
-	} while (0)
 
 #define ADSPRPC_ERR(fmt, args...)\
 	pr_err("Error: adsprpc (%d): %d: %d: %s: %s: " fmt, __LINE__,\
@@ -483,7 +475,7 @@ struct fastrpc_ioctl_control {
 };
 
 #define FASTRPC_MAX_DSP_ATTRIBUTES	(256)
-#define FASTRPC_MAX_ATTRIBUTES	(258)
+#define FASTRPC_MAX_ATTRIBUTES	(259)
 
 enum fastrpc_dsp_capability {
 	ASYNC_FASTRPC_CAP = 9,
@@ -537,6 +529,12 @@ enum fastrpc_response_flags {
 	POLL_MODE = 5,
 };
 
+enum fastrpc_process_create_state {
+	PROCESS_CREATE_DEFAULT = 0,			/* Process is not created */
+	PROCESS_CREATE_IS_INPROGRESS = 1,	/* Process creation is in progress */
+	PROCESS_CREATE_SUCCESS = 2,			/* Process creation is successful */
+};
+
 struct smq_invoke_rspv2 {
 	uint64_t ctx;		  /* invoke caller context */
 	int retval;		  /* invoke return value */
@@ -569,6 +567,8 @@ enum fastrpc_process_exit_states {
 	FASTRPC_PROCESS_DSP_EXIT_INIT				= 2,
 	/* Process exit in DSP complete */
 	FASTRPC_PROCESS_DSP_EXIT_COMPLETE			= 3,
+	/* Process exit in DSP error */
+	FASTRPC_PROCESS_DSP_EXIT_ERROR				= 4,
 };
 
 static inline struct smq_invoke_buf *smq_invoke_buf_start(remote_arg64_t *pra,

@@ -60,7 +60,7 @@ int kgsl_bus_update(struct kgsl_device *device,
 
 		/*
 		 * larger % of stalls we consider increasing the bus vote by
-		 *  more than 1 level.
+		 * more than 1 level.
 		 */
 		if ((pwr->active_pwrlevel == pwr->min_pwrlevel) &&
 				pwr->ddr_stall_percent >= 95)

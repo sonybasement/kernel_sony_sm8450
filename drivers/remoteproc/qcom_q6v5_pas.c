@@ -10,6 +10,7 @@
  * Copyright (C) 2016 Linaro Ltd
  * Copyright (C) 2014 Sony Mobile Communications AB
  * Copyright (c) 2012-2013, 2020-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/clk.h>
@@ -19,6 +20,8 @@
 #include <linux/module.h>
 #include <linux/of_address.h>
 #include <linux/of_device.h>
+#include <linux/of_reserved_mem.h>
+#include <linux/dma-mapping.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
@@ -31,6 +34,7 @@
 #include <linux/soc/qcom/smem_state.h>
 #include <linux/soc/qcom/qcom_aoss.h>
 #include <trace/events/rproc_qcom.h>
+#include <soc/qcom/qcom_ramdump.h>
 
 #include "qcom_common.h"
 #include "qcom_pil_info.h"
@@ -58,6 +62,7 @@ struct adsp_data {
 	bool uses_elf64;
 	bool has_aggre2_clk;
 	bool auto_boot;
+	bool dma_phys_below_32b;
 
 	char **active_pd_names;
 	char **proxy_pd_names;
@@ -70,6 +75,7 @@ struct adsp_data {
 
 struct qcom_adsp {
 	struct device *dev;
+	struct device *minidump_dev;
 	struct rproc *rproc;
 
 	struct qcom_q6v5 q6v5;
@@ -95,6 +101,7 @@ struct qcom_adsp {
 	struct icc_path *bus_client;
 	int crash_reason_smem;
 	bool has_aggre2_clk;
+	bool dma_phys_below_32b;
 	const char *info_name;
 
 	struct completion start_done;
@@ -153,7 +160,7 @@ static void adsp_minidump(struct rproc *rproc)
 	if (rproc->dump_conf == RPROC_COREDUMP_DISABLED)
 		goto exit;
 
-	qcom_minidump(rproc, adsp->minidump_id, adsp_segment_dump);
+	qcom_minidump(rproc, adsp->minidump_dev, adsp->minidump_id, adsp_segment_dump);
 
 exit:
 	trace_rproc_qcom_event(dev_name(adsp->dev), "adsp_minidump", "exit");
@@ -295,7 +302,7 @@ static int adsp_load(struct rproc *rproc, const struct firmware *fw)
 	scm_pas_enable_bw();
 	ret = qcom_mdt_load_no_free(adsp->dev, fw, rproc->firmware, adsp->pas_id,
 			    adsp->mem_region, adsp->mem_phys, adsp->mem_size,
-			    &adsp->mem_reloc, adsp->mdata);
+			    &adsp->mem_reloc, adsp->dma_phys_below_32b, adsp->mdata);
 	scm_pas_disable_bw();
 	if (ret)
 		goto exit;
@@ -431,7 +438,8 @@ unscale_bus:
 disable_irqs:
 	qcom_q6v5_unprepare(&adsp->q6v5);
 free_metadata:
-	qcom_mdt_free_metadata(adsp->pas_id, adsp->mdata, ret);
+	qcom_mdt_free_metadata(adsp->dev, adsp->pas_id, adsp->mdata,
+				adsp->dma_phys_below_32b, ret);
 
 	trace_rproc_qcom_event(dev_name(adsp->dev), "adsp_start", "exit");
 	return ret;
@@ -728,6 +736,28 @@ static int adsp_alloc_memory_region(struct qcom_adsp *adsp)
 }
 
 
+static int adsp_setup_32b_dma_allocs(struct qcom_adsp *adsp)
+{
+	int ret;
+
+	if (!adsp->dma_phys_below_32b)
+		return 0;
+
+	ret = of_reserved_mem_device_init_by_idx(adsp->dev, adsp->dev->of_node, 1);
+	if (ret) {
+		dev_err(adsp->dev,
+			"Unable to get the CMA area for performing dma_alloc_* calls\n");
+		goto out;
+	}
+
+	ret = dma_set_mask_and_coherent(adsp->dev, DMA_BIT_MASK(32));
+	if (ret)
+		dev_err(adsp->dev, "Unable to set the coherent mask to 32-bits!\n");
+
+out:
+	return ret;
+}
+
 static int adsp_probe(struct platform_device *pdev)
 {
 	const struct adsp_data *desc;
@@ -735,6 +765,7 @@ static int adsp_probe(struct platform_device *pdev)
 	struct rproc *rproc;
 	const char *fw_name;
 	const struct rproc_ops *ops = &adsp_ops;
+	char md_dev_name[32];
 	int ret;
 
 	desc = of_device_get_match_data(&pdev->dev);
@@ -777,6 +808,7 @@ static int adsp_probe(struct platform_device *pdev)
 	adsp->has_aggre2_clk = desc->has_aggre2_clk;
 	adsp->info_name = desc->sysmon_name;
 	adsp->qmp_name = desc->qmp_name;
+	adsp->dma_phys_below_32b = desc->dma_phys_below_32b;
 
 	if (desc->free_after_auth_reset) {
 		adsp->mdata = devm_kzalloc(adsp->dev, sizeof(struct qcom_mdt_metadata), GFP_KERNEL);
@@ -790,22 +822,26 @@ static int adsp_probe(struct platform_device *pdev)
 
 	ret = adsp_alloc_memory_region(adsp);
 	if (ret)
-		goto free_rproc;
+		goto deinit_wakeup_source;
+
+	ret = adsp_setup_32b_dma_allocs(adsp);
+	if (ret)
+		goto deinit_wakeup_source;
 
 	ret = adsp_init_clock(adsp);
 	if (ret)
-		goto free_rproc;
+		goto deinit_wakeup_source;
 
 	ret = adsp_init_regulator(adsp);
 	if (ret)
-		goto free_rproc;
+		goto deinit_wakeup_source;
 
 	adsp_init_bus_scaling(adsp);
 
 	ret = adsp_pds_attach(&pdev->dev, adsp->active_pds,
 			      desc->active_pd_names);
 	if (ret < 0)
-		goto free_rproc;
+		goto deinit_wakeup_source;
 	adsp->active_pd_count = ret;
 
 	ret = adsp_pds_attach(&pdev->dev, adsp->proxy_pds,
@@ -841,12 +877,21 @@ static int adsp_probe(struct platform_device *pdev)
 	if (ret)
 		goto remove_subdevs;
 
+	snprintf(md_dev_name, ARRAY_SIZE(md_dev_name), "%s-md", pdev->dev.of_node->name);
+	adsp->minidump_dev = qcom_create_ramdump_device(md_dev_name, NULL);
+	if (!adsp->minidump_dev)
+		dev_err(&pdev->dev, "Unable to create %s minidump device.\n", md_dev_name);
+
 	ret = rproc_add(rproc);
 	if (ret)
-		goto remove_attr_txn_id;
+		goto destroy_minidump_dev;
 
 	return 0;
-remove_attr_txn_id:
+
+destroy_minidump_dev:
+	if (adsp->minidump_dev)
+		qcom_destroy_ramdump_device(adsp->minidump_dev);
+
 	device_remove_file(adsp->dev, &dev_attr_txn_id);
 remove_subdevs:
 	qcom_remove_sysmon_subdev(adsp->sysmon);
@@ -854,6 +899,8 @@ detach_proxy_pds:
 	adsp_pds_detach(adsp, adsp->proxy_pds, adsp->proxy_pd_count);
 detach_active_pds:
 	adsp_pds_detach(adsp, adsp->active_pds, adsp->active_pd_count);
+deinit_wakeup_source:
+	device_init_wakeup(adsp->dev, false);
 free_rproc:
 	rproc_free(rproc);
 
@@ -865,11 +912,14 @@ static int adsp_remove(struct platform_device *pdev)
 	struct qcom_adsp *adsp = platform_get_drvdata(pdev);
 
 	rproc_del(adsp->rproc);
+	if (adsp->minidump_dev)
+		qcom_destroy_ramdump_device(adsp->minidump_dev);
 	device_remove_file(adsp->dev, &dev_attr_txn_id);
 	qcom_remove_glink_subdev(adsp->rproc, &adsp->glink_subdev);
 	qcom_remove_sysmon_subdev(adsp->sysmon);
 	qcom_remove_smd_subdev(adsp->rproc, &adsp->smd_subdev);
 	qcom_remove_ssr_subdev(adsp->rproc, &adsp->ssr_subdev);
+	device_init_wakeup(adsp->dev, false);
 	rproc_free(adsp->rproc);
 
 	return 0;
@@ -926,6 +976,34 @@ static const struct adsp_data sm8250_adsp_resource = {
 };
 
 static const struct adsp_data waipio_adsp_resource = {
+	.crash_reason_smem = 423,
+	.firmware_name = "adsp.mdt",
+	.pas_id = 1,
+	.minidump_id = 5,
+	.uses_elf64 = true,
+	.has_aggre2_clk = false,
+	.auto_boot = false,
+	.ssr_name = "lpass",
+	.sysmon_name = "adsp",
+	.qmp_name = "adsp",
+	.ssctl_id = 0x14,
+};
+
+static const struct adsp_data neo_adsp_resource = {
+	.crash_reason_smem = 423,
+	.firmware_name = "adsp.mdt",
+	.pas_id = 1,
+	.minidump_id = 5,
+	.uses_elf64 = true,
+	.has_aggre2_clk = false,
+	.auto_boot = false,
+	.ssr_name = "lpass",
+	.sysmon_name = "adsp",
+	.qmp_name = "adsp",
+	.ssctl_id = 0x14,
+};
+
+static const struct adsp_data anorak_adsp_resource = {
 	.crash_reason_smem = 423,
 	.firmware_name = "adsp.mdt",
 	.pas_id = 1,
@@ -1059,6 +1137,34 @@ static const struct adsp_data waipio_cdsp_resource = {
 	.ssctl_id = 0x17,
 };
 
+static const struct adsp_data neo_cdsp_resource = {
+	.crash_reason_smem = 601,
+	.firmware_name = "cdsp.mdt",
+	.pas_id = 18,
+	.minidump_id = 7,
+	.uses_elf64 = true,
+	.has_aggre2_clk = false,
+	.auto_boot = false,
+	.ssr_name = "cdsp",
+	.sysmon_name = "cdsp",
+	.qmp_name = "cdsp",
+	.ssctl_id = 0x17,
+};
+
+static const struct adsp_data anorak_cdsp_resource = {
+	.crash_reason_smem = 601,
+	.firmware_name = "cdsp.mdt",
+	.pas_id = 18,
+	.minidump_id = 7,
+	.uses_elf64 = true,
+	.has_aggre2_clk = false,
+	.auto_boot = false,
+	.ssr_name = "cdsp",
+	.sysmon_name = "cdsp",
+	.qmp_name = "cdsp",
+	.ssctl_id = 0x17,
+};
+
 static const struct adsp_data diwali_cdsp_resource = {
 	.crash_reason_smem = 601,
 	.firmware_name = "cdsp.mdt",
@@ -1134,6 +1240,7 @@ static const struct adsp_data waipio_mpss_resource = {
 	.sysmon_name = "modem",
 	.qmp_name = "modem",
 	.ssctl_id = 0x12,
+	.dma_phys_below_32b = true,
 };
 
 static const struct adsp_data diwali_mpss_resource = {
@@ -1149,6 +1256,7 @@ static const struct adsp_data diwali_mpss_resource = {
 	.sysmon_name = "modem",
 	.qmp_name = "modem",
 	.ssctl_id = 0x12,
+	.dma_phys_below_32b = true,
 };
 
 static const struct adsp_data cape_mpss_resource = {
@@ -1164,6 +1272,7 @@ static const struct adsp_data cape_mpss_resource = {
 	.sysmon_name = "modem",
 	.qmp_name = "modem",
 	.ssctl_id = 0x12,
+	.dma_phys_below_32b = true,
 };
 
 static const struct adsp_data parrot_mpss_resource = {
@@ -1179,6 +1288,7 @@ static const struct adsp_data parrot_mpss_resource = {
 	.sysmon_name = "modem",
 	.qmp_name = "modem",
 	.ssctl_id = 0x12,
+	.dma_phys_below_32b = true,
 };
 
 static const struct adsp_data slpi_resource_init = {
@@ -1274,6 +1384,31 @@ static const struct adsp_data diwali_wpss_resource = {
 	.firmware_name = "wpss.mdt",
 	.pas_id = 6,
 	.minidump_id = 4,
+	.uses_elf64 = true,
+	.ssr_name = "wpss",
+	.sysmon_name = "wpss",
+	.qmp_name = "wpss",
+	.ssctl_id = 0x19,
+};
+
+static const struct adsp_data parrot_wpss_resource = {
+	.crash_reason_smem = 626,
+	.firmware_name = "wpss.mdt",
+	.pas_id = 6,
+	.minidump_id = 4,
+	.uses_elf64 = true,
+	.ssr_name = "wpss",
+	.sysmon_name = "wpss",
+	.qmp_name = "wpss",
+	.ssctl_id = 0x19,
+};
+
+static const struct adsp_data neo_wpss_resource = {
+	.crash_reason_smem = 626,
+	.firmware_name = "wpss.mdt",
+	.pas_id = 6,
+	.minidump_id = 4,
+	.uses_elf64 = true,
 	.ssr_name = "wpss",
 	.sysmon_name = "wpss",
 	.qmp_name = "wpss",
@@ -1313,6 +1448,12 @@ static const struct of_device_id adsp_of_match[] = {
 	{ .compatible = "qcom,parrot-adsp-pas", .data = &parrot_adsp_resource},
 	{ .compatible = "qcom,parrot-cdsp-pas", .data = &parrot_cdsp_resource},
 	{ .compatible = "qcom,parrot-modem-pas", .data = &parrot_mpss_resource},
+	{ .compatible = "qcom,parrot-wpss-pas", .data = &parrot_wpss_resource},
+	{ .compatible = "qcom,neo-adsp-pas", .data = &neo_adsp_resource},
+	{ .compatible = "qcom,neo-cdsp-pas", .data = &neo_cdsp_resource},
+	{ .compatible = "qcom,neo-wpss-pas", .data = &neo_wpss_resource},
+	{ .compatible = "qcom,anorak-adsp-pas", .data = &anorak_adsp_resource},
+	{ .compatible = "qcom,anorak-cdsp-pas", .data = &anorak_cdsp_resource},
 	{ },
 };
 MODULE_DEVICE_TABLE(of, adsp_of_match);

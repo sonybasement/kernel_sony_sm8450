@@ -204,18 +204,6 @@ void kgsl_pwrscale_enable(struct kgsl_device *device)
 	}
 }
 
-#ifdef DEVFREQ_FLAG_WAKEUP_MAXFREQ
-static inline bool _check_maxfreq(u32 flags)
-{
-	return (flags & DEVFREQ_FLAG_WAKEUP_MAXFREQ);
-}
-#else
-static inline bool _check_maxfreq(u32 flags)
-{
-	return false;
-}
-#endif
-
 /*
  * kgsl_devfreq_target - devfreq_dev_profile.target callback
  * @dev: see devfreq.h
@@ -235,24 +223,27 @@ int kgsl_devfreq_target(struct device *dev, unsigned long *freq, u32 flags)
 	int level;
 	unsigned int i;
 	unsigned long cur_freq, rec_freq;
+	struct kgsl_pwrscale *pwrscale = &device->pwrscale;
 
 	if (device == NULL)
 		return -ENODEV;
 	if (freq == NULL)
 		return -EINVAL;
-	if (!device->pwrscale.devfreq_enabled)
-		return -EPROTO;
 
-	pwr = &device->pwrctrl;
-
-	if (_check_maxfreq(flags)) {
+	if (!pwrscale->devfreq_enabled) {
 		/*
-		 * The GPU is about to get suspended,
-		 * but it needs to be at the max power level when waking up
+		 * When we try to use performance governor, this function
+		 * will called by devfreq driver, while adding governor using
+		 * devfreq_add_device.
+		 * To add and start performance governor successfully during
+		 * probe, return 0 when we reach here. pwrscale->enabled will
+		 * be set to true after successfully starting the governor.
 		 */
-		pwr->wakeup_maxpwrlevel = 1;
-		return 0;
+		if (!pwrscale->enabled)
+			return 0;
+		return -EPROTO;
 	}
+	pwr = &device->pwrctrl;
 
 	rec_freq = *freq;
 
@@ -363,13 +354,26 @@ int kgsl_devfreq_get_dev_status(struct device *dev,
 int kgsl_devfreq_get_cur_freq(struct device *dev, unsigned long *freq)
 {
 	struct kgsl_device *device = dev_get_drvdata(dev);
+	struct kgsl_pwrscale *pwrscale = &device->pwrscale;
 
 	if (device == NULL)
 		return -ENODEV;
 	if (freq == NULL)
 		return -EINVAL;
-	if (!device->pwrscale.devfreq_enabled)
+
+	if (!pwrscale->devfreq_enabled) {
+		/*
+		 * When we try to use performance governor, this function
+		 * will called by devfreq driver, while adding governor using
+		 * devfreq_add_device.
+		 * To add and start performance governor successfully during
+		 * probe, return 0 when we reach here. pwrscale->enabled will
+		 * be set to true after successfully starting the governor.
+		 */
+		if (!pwrscale->enabled)
+			return 0;
 		return -EPROTO;
+	}
 
 	mutex_lock(&device->mutex);
 	*freq = kgsl_pwrctrl_active_freq(&device->pwrctrl);
@@ -411,29 +415,15 @@ int kgsl_busmon_get_dev_status(struct device *dev,
 	return 0;
 }
 
-#ifdef DEVFREQ_FLAG_FAST_HINT
 static inline bool _check_fast_hint(u32 flags)
 {
 	return (flags & DEVFREQ_FLAG_FAST_HINT);
 }
-#else
-static inline bool _check_fast_hint(u32 flags)
-{
-	return false;
-}
-#endif
 
-#ifdef DEVFREQ_FLAG_SLOW_HINT
 static inline bool _check_slow_hint(u32 flags)
 {
 	return (flags & DEVFREQ_FLAG_SLOW_HINT);
 }
-#else
-static inline bool _check_slow_hint(u32 flags)
-{
-	return false;
-}
-#endif
 
 /*
  * kgsl_busmon_target - devfreq_dev_profile.target callback
@@ -683,8 +673,6 @@ int kgsl_pwrscale_init(struct kgsl_device *device, struct platform_device *pdev,
 	struct msm_adreno_extended_profile *gpu_profile;
 	int i, ret;
 
-	pwrscale->enabled = true;
-
 	gpu_profile = &pwrscale->gpu_profile;
 	gpu_profile->private_data = &adreno_tz_data;
 
@@ -774,6 +762,7 @@ int kgsl_pwrscale_init(struct kgsl_device *device, struct platform_device *pdev,
 		return IS_ERR(devfreq) ? PTR_ERR(devfreq) : -EINVAL;
 	}
 
+	pwrscale->enabled = true;
 	pwrscale->devfreqptr = devfreq;
 	pwrscale->cooling_dev = of_devfreq_cooling_register(pdev->dev.of_node,
 		devfreq);

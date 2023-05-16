@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "icnss2_qmi: " fmt
@@ -24,6 +25,7 @@
 #include <soc/qcom/icnss2.h>
 #include <soc/qcom/service-locator.h>
 #include <soc/qcom/service-notifier.h>
+#include <soc/qcom/of_common.h>
 #include "wlan_firmware_service_v01.h"
 #include "main.h"
 #include "qmi.h"
@@ -39,16 +41,18 @@
 #define ELF_BDF_FILE_NAME		"bdwlan.elf"
 #define ELF_BDF_FILE_NAME_PREFIX	"bdwlan.e"
 #define BIN_BDF_FILE_NAME		"bdwlan.bin"
-#define BIN_BDF_FILE_NAME_PREFIX	"bdwlan.b"
+#define BIN_BDF_FILE_NAME_PREFIX	"bdwlan."
 #define REGDB_FILE_NAME			"regdb.bin"
-#define DUMMY_BDF_FILE_NAME		"bdwlan.dmy"
 
 #define QDSS_TRACE_CONFIG_FILE "qdss_trace_config.cfg"
 
+#define WLAN_BOARD_ID_INDEX		0x100
 #define DEVICE_BAR_SIZE			0x200000
 #define M3_SEGMENT_ADDR_MASK		0xFFFFFFFF
 #define DMS_QMI_MAX_MSG_LEN		SZ_256
 #define DMS_MAC_NOT_PROVISIONED		16
+#define BDWLAN_SIZE			6
+#define UMC_CHIP_ID                    0x4320
 
 #ifdef CONFIG_ICNSS2_DEBUG
 bool ignore_fw_timeout;
@@ -614,6 +618,74 @@ qmi_registered:
 	return ret;
 }
 
+int wlfw_cal_report_req(struct icnss_priv *priv)
+{
+	int ret;
+	struct wlfw_cal_report_req_msg_v01 *req;
+	struct wlfw_cal_report_resp_msg_v01 *resp;
+	struct qmi_txn txn;
+
+	if (!priv)
+		return -ENODEV;
+
+	if (test_bit(ICNSS_FW_DOWN, &priv->state))
+		return -EINVAL;
+
+	icnss_pr_info("Sending cal report request, state: 0x%lx\n",
+		      priv->state);
+
+	req = kzalloc(sizeof(*req), GFP_KERNEL);
+	if (!req)
+		return -ENOMEM;
+
+	resp = kzalloc(sizeof(*resp), GFP_KERNEL);
+	if (!resp) {
+		kfree(req);
+		return -ENOMEM;
+	}
+	req->meta_data_len = 0;
+
+	ret = qmi_txn_init(&priv->qmi, &txn,
+			   wlfw_cal_report_resp_msg_v01_ei, resp);
+	if (ret < 0) {
+		icnss_qmi_fatal_err("Fail to init txn for cal report req %d\n",
+				    ret);
+		goto out;
+	}
+
+	ret = qmi_send_request(&priv->qmi, NULL, &txn,
+			       QMI_WLFW_CAL_REPORT_REQ_V01,
+			       WLFW_CAL_REPORT_REQ_MSG_V01_MAX_MSG_LEN,
+			       wlfw_cal_report_req_msg_v01_ei, req);
+	if (ret < 0) {
+		qmi_txn_cancel(&txn);
+		icnss_qmi_fatal_err("Fail to send cal report req %d\n", ret);
+		goto out;
+	}
+
+	ret = qmi_txn_wait(&txn,
+			   priv->ctrl_params.qmi_timeout);
+
+	if (ret < 0) {
+		icnss_qmi_fatal_err("Cal report wait failed with ret %d\n",
+				    ret);
+		goto out;
+	} else if (resp->resp.result != QMI_RESULT_SUCCESS_V01) {
+		icnss_qmi_fatal_err("QMI cal report request rejected, result:%d error:%d\n",
+				    resp->resp.result, resp->resp.error);
+		ret = -resp->resp.result;
+		goto out;
+	}
+
+	kfree(resp);
+	kfree(req);
+
+	return 0;
+
+out:
+	return ret;
+}
+
 int wlfw_cap_send_sync_msg(struct icnss_priv *priv)
 {
 	int ret;
@@ -709,6 +781,11 @@ int wlfw_cap_send_sync_msg(struct icnss_priv *priv)
 	if (resp->rd_card_chain_cap_valid &&
 	    resp->rd_card_chain_cap == WLFW_RD_CARD_CHAIN_CAP_1x1_V01)
 		priv->is_chain1_supported = false;
+
+	if (resp->foundry_name_valid)
+		priv->foundry_name = resp->foundry_name[0];
+	else if (resp->chip_info_valid && priv->chip_info.chip_id == UMC_CHIP_ID)
+		priv->foundry_name = 'u';
 
 	icnss_pr_dbg("Capability, chip_id: 0x%x, chip_family: 0x%x, board_id: 0x%x, soc_id: 0x%x",
 		     priv->chip_info.chip_id, priv->chip_info.chip_family,
@@ -930,6 +1007,7 @@ static int icnss_get_bdf_file_name(struct icnss_priv *priv,
 				   u32 filename_len)
 {
 	char filename_tmp[ICNSS_MAX_FILE_NAME];
+	char foundry_specific_filename[ICNSS_MAX_FILE_NAME];
 	int ret = 0;
 
 	switch (bdf_type) {
@@ -949,23 +1027,26 @@ static int icnss_get_bdf_file_name(struct icnss_priv *priv,
 	case ICNSS_BDF_BIN:
 		if (priv->board_id == 0xFF)
 			snprintf(filename_tmp, filename_len, BIN_BDF_FILE_NAME);
-		else if (priv->board_id < 0xFF)
+		else if (priv->board_id >= WLAN_BOARD_ID_INDEX)
 			snprintf(filename_tmp, filename_len,
-				 BIN_BDF_FILE_NAME_PREFIX "%02x",
+				 BIN_BDF_FILE_NAME_PREFIX "%03x",
 				 priv->board_id);
 		else
 			snprintf(filename_tmp, filename_len,
-				 BDF_FILE_NAME_PREFIX "%02x.b%02x",
-				 priv->board_id >> 8 & 0xFF,
-				 priv->board_id & 0xFF);
+				 BIN_BDF_FILE_NAME_PREFIX "b%02x",
+				 priv->board_id);
+		if (priv->foundry_name) {
+			strlcpy(foundry_specific_filename, filename_tmp, ICNSS_MAX_FILE_NAME);
+			memmove(foundry_specific_filename + BDWLAN_SIZE + 1,
+				foundry_specific_filename + BDWLAN_SIZE,
+				BDWLAN_SIZE - 1);
+			foundry_specific_filename[BDWLAN_SIZE] = priv->foundry_name;
+			foundry_specific_filename[ICNSS_MAX_FILE_NAME - 1] = '\0';
+			strlcpy(filename_tmp, foundry_specific_filename, ICNSS_MAX_FILE_NAME);
+		}
 		break;
 	case ICNSS_BDF_REGDB:
 		snprintf(filename_tmp, filename_len, REGDB_FILE_NAME);
-		break;
-	case ICNSS_BDF_DUMMY:
-		icnss_pr_dbg("CNSS_BDF_DUMMY is set, sending dummy BDF\n");
-		snprintf(filename_tmp, filename_len, DUMMY_BDF_FILE_NAME);
-		ret = ICNSS_MAX_FILE_NAME;
 		break;
 	default:
 		icnss_pr_err("Invalid BDF type: %d\n",
@@ -974,7 +1055,7 @@ static int icnss_get_bdf_file_name(struct icnss_priv *priv,
 		break;
 	}
 
-	if (ret >= 0)
+	if (!ret)
 		icnss_add_fw_prefix_name(priv, filename, filename_tmp);
 
 	return ret;
@@ -989,8 +1070,6 @@ static char *icnss_bdf_type_to_str(enum icnss_bdf_type bdf_type)
 		return "BDF";
 	case ICNSS_BDF_REGDB:
 		return "REGDB";
-	case ICNSS_BDF_DUMMY:
-		return "BDF";
 	default:
 		return "UNKNOWN";
 	}
@@ -1022,13 +1101,8 @@ int icnss_wlfw_bdf_dnld_send_sync(struct icnss_priv *priv, u32 bdf_type)
 
 	ret = icnss_get_bdf_file_name(priv, bdf_type,
 				      filename, sizeof(filename));
-	if (ret > 0) {
-		temp = DUMMY_BDF_FILE_NAME;
-		remaining = ICNSS_MAX_FILE_NAME;
-		goto bypass_bdf;
-	} else if (ret < 0) {
+	if (ret)
 		goto err_req_fw;
-	}
 
 	ret = request_firmware(&fw_entry, filename, &priv->pdev->dev);
 	if (ret) {
@@ -1040,7 +1114,6 @@ int icnss_wlfw_bdf_dnld_send_sync(struct icnss_priv *priv, u32 bdf_type)
 	temp = fw_entry->data;
 	remaining = fw_entry->size;
 
-bypass_bdf:
 	icnss_pr_dbg("Downloading %s: %s, size: %u\n",
 		     icnss_bdf_type_to_str(bdf_type), filename, remaining);
 
@@ -1105,16 +1178,14 @@ bypass_bdf:
 		req->seg_id++;
 	}
 
-	if (bdf_type != ICNSS_BDF_DUMMY)
-		release_firmware(fw_entry);
+	release_firmware(fw_entry);
 
 	kfree(req);
 	kfree(resp);
 	return 0;
 
 err_send:
-	if (bdf_type != ICNSS_BDF_DUMMY)
-		release_firmware(fw_entry);
+	release_firmware(fw_entry);
 err_req_fw:
 	if (bdf_type != ICNSS_BDF_REGDB)
 		ICNSS_QMI_ASSERT();
@@ -2856,7 +2927,7 @@ static void wlfw_del_server(struct qmi_handle *qmi,
 	struct icnss_priv *priv = container_of(qmi, struct icnss_priv, qmi);
 
 	if (priv && test_bit(ICNSS_DEL_SERVER, &priv->state)) {
-		icnss_pr_info("WLFW server delete in progress, Ignore server delete:  0x%lx\n",
+		icnss_pr_info("WLFW server delete / icnss remove in progress, Ignore server delete:  0x%lx\n",
 			      priv->state);
 		return;
 	}
@@ -2901,6 +2972,7 @@ int icnss_register_fw_service(struct icnss_priv *priv)
 
 void icnss_unregister_fw_service(struct icnss_priv *priv)
 {
+	set_bit(ICNSS_DEL_SERVER, &priv->state);
 	qmi_handle_release(&priv->qmi);
 }
 
@@ -3088,6 +3160,8 @@ int wlfw_host_cap_send_sync(struct icnss_priv *priv)
 	struct wlfw_host_cap_req_msg_v01 *req;
 	struct wlfw_host_cap_resp_msg_v01 *resp;
 	struct qmi_txn txn;
+	int ddr_type;
+	u32 gpio;
 	int ret = 0;
 	u64 iova_start = 0, iova_size = 0,
 	    iova_ipa_start = 0, iova_ipa_size = 0;
@@ -3106,12 +3180,7 @@ int wlfw_host_cap_send_sync(struct icnss_priv *priv)
 	}
 
 	req->num_clients_valid = 1;
-	if (test_bit(ENABLE_DAEMON_SUPPORT,
-		     &priv->ctrl_params.quirks))
-		req->num_clients = 2;
-	else
-		req->num_clients = 1;
-	icnss_pr_dbg("Number of clients is %d\n", req->num_clients);
+	req->num_clients = 1;
 
 	req->bdf_support_valid = 1;
 	req->bdf_support = 1;
@@ -3144,6 +3213,56 @@ int wlfw_host_cap_send_sync(struct icnss_priv *priv)
 		req->wlan_enable_delay_valid = 1;
 		req->wlan_enable_delay = priv->wlan_en_delay_ms;
 	}
+
+	/* ddr_type = 7(LPDDR4) and 8(LPDDR5) */
+	ddr_type = of_fdt_get_ddrtype();
+	if (ddr_type > 0) {
+		icnss_pr_dbg("DDR Type: %d\n", ddr_type);
+		req->ddr_type_valid = 1;
+		req->ddr_type = ddr_type;
+	}
+
+	ret = of_property_read_u32(priv->pdev->dev.of_node, "wlan-en-gpio",
+				   &gpio);
+	if (!ret) {
+		icnss_pr_dbg("WLAN_EN_GPIO modified through DT: %d\n", gpio);
+		req->gpio_info_valid = 1;
+		req->gpio_info[WLAN_EN_GPIO_V01] = gpio;
+	} else {
+		req->gpio_info[WLAN_EN_GPIO_V01] = 0xFFFF;
+	}
+
+	ret = of_property_read_u32(priv->pdev->dev.of_node, "bt-en-gpio",
+				   &gpio);
+	if (!ret) {
+		icnss_pr_dbg("BT_EN_GPIO modified through DT: %d\n", gpio);
+		req->gpio_info_valid = 1;
+		req->gpio_info[BT_EN_GPIO_V01] = gpio;
+	} else {
+		req->gpio_info[BT_EN_GPIO_V01] = 0xFFFF;
+	}
+
+	ret = of_property_read_u32(priv->pdev->dev.of_node, "host-sol-gpio",
+				   &gpio);
+	if (!ret) {
+		icnss_pr_dbg("HOST_SOL_GPIO modified through DT: %d\n", gpio);
+		req->gpio_info_valid = 1;
+		req->gpio_info[HOST_SOL_GPIO_V01] = gpio;
+	} else {
+		req->gpio_info[HOST_SOL_GPIO_V01] = 0xFFFF;
+	}
+
+	ret = of_property_read_u32(priv->pdev->dev.of_node, "target-sol-gpio",
+				   &gpio);
+	if (!ret) {
+		icnss_pr_dbg("TARGET_SOL_GPIO modified through DT: %d\n", gpio);
+		req->gpio_info_valid = 1;
+		req->gpio_info[TARGET_SOL_GPIO_V01] = gpio;
+	} else {
+		req->gpio_info[TARGET_SOL_GPIO_V01] = 0xFFFF;
+	}
+
+	req->gpio_info_len = GPIO_TYPE_MAX_V01;
 
 	ret = qmi_txn_init(&priv->qmi, &txn,
 			   wlfw_host_cap_resp_msg_v01_ei, resp);

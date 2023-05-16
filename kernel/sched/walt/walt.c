@@ -3828,6 +3828,7 @@ static void walt_sched_init_rq(struct rq *rq)
 	}
 	wrq->notif_pending = false;
 
+	wrq->num_mvp_tasks = 0;
 	INIT_LIST_HEAD(&wrq->mvp_tasks);
 }
 
@@ -3911,34 +3912,37 @@ static void walt_cpu_frequency_limits(void *unused, struct cpufreq_policy *polic
  */
 static void android_rvh_update_cpu_capacity(void *unused, int cpu, unsigned long *capacity)
 {
-	unsigned long max_capacity = arch_scale_cpu_capacity(cpu);
+	unsigned long fmax_capacity = arch_scale_cpu_capacity(cpu);
 	unsigned long thermal_pressure = arch_scale_thermal_pressure(cpu);
-	unsigned long thermal_cap;
+	unsigned long thermal_cap, old;
+	unsigned long rt_pressure = fmax_capacity - *capacity;
 	struct walt_sched_cluster *cluster;
-	unsigned long rt_pressure = max_capacity - *capacity;
+	struct rq *rq = cpu_rq(cpu);
 
 	if (unlikely(walt_disabled))
 		return;
 
 	/*
-	 * thermal_pressure = max_capacity - curr_cap_as_per_thermal.
+	 * thermal_pressure = cpu_scale - curr_cap_as_per_thermal.
 	 * so,
-	 * curr_cap_as_per_thermal = max_capacity - thermal_pressure.
+	 * curr_cap_as_per_thermal = cpu_scale - thermal_pressure.
 	 */
 
-	thermal_cap = max_capacity - thermal_pressure;
+	thermal_cap = fmax_capacity - thermal_pressure;
 
 	cluster = cpu_cluster(cpu);
-	/* reduce the max_capacity under cpufreq constraints */
+	/* reduce the fmax_capacity under cpufreq constraints */
 	if (cluster->max_freq != cluster->max_possible_freq)
-		max_capacity = mult_frac(max_capacity, cluster->max_freq,
+		fmax_capacity = mult_frac(fmax_capacity, cluster->max_freq,
 					 cluster->max_possible_freq);
 
-	cpu_rq(cpu)->cpu_capacity_orig = min(max_capacity, thermal_cap);
-	*capacity = cpu_rq(cpu)->cpu_capacity_orig - rt_pressure;
+	old = rq->cpu_capacity_orig;
+	rq->cpu_capacity_orig = min(fmax_capacity, thermal_cap);
 
-	if (max_capacity != arch_scale_cpu_capacity(cpu))
+	if (old != rq->cpu_capacity_orig)
 		trace_update_cpu_capacity(cpu, rt_pressure, *capacity);
+
+	*capacity = max(rq->cpu_capacity_orig - rt_pressure, 1UL);
 }
 
 static void android_rvh_sched_cpu_starting(void *unused, int cpu)
@@ -4377,10 +4381,15 @@ static int walt_init_stop_handler(void *data)
 	struct task_struct *g, *p;
 	u64 window_start_ns, nr_windows;
 	struct walt_rq *wrq;
+	int level = 0;
 
 	read_lock(&tasklist_lock);
 	for_each_possible_cpu(cpu) {
-		raw_spin_lock(&cpu_rq(cpu)->lock);
+		if (level == 0)
+			raw_spin_lock(&cpu_rq(cpu)->lock);
+		else
+			raw_spin_lock_nested(&cpu_rq(cpu)->lock, level);
+		level++;
 	}
 
 	do_each_thread(g, p) {

@@ -4,7 +4,9 @@
  * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
+#include <dt-bindings/regulator/qcom,rpmh-regulator-levels.h>
 #include <linux/clk.h>
+#include <linux/clk/qcom.h>
 #include <linux/component.h>
 #include <linux/delay.h>
 #include <linux/dma-map-ops.h>
@@ -477,6 +479,37 @@ static void gmu_ao_sync_event(struct adreno_device *adreno_dev)
 	local_irq_restore(flags);
 }
 
+int a6xx_gmu_enable_gdsc(struct adreno_device *adreno_dev)
+{
+	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
+	struct a6xx_gmu_device *gmu = to_a6xx_gmu(adreno_dev);
+	int ret;
+
+	ret = wait_for_completion_timeout(&gmu->gdsc_gate, msecs_to_jiffies(5000));
+	if (!ret) {
+		dev_err(device->dev, "GPU CX wait timeout. Dumping CX votes:\n");
+		/* Dump the cx regulator consumer list */
+		qcom_clk_dump(NULL, gmu->cx_gdsc, false);
+	}
+
+	ret = regulator_enable(gmu->cx_gdsc);
+	if (ret)
+		dev_err(&gmu->pdev->dev,
+			"Failed to enable GMU CX gdsc, error %d\n", ret);
+
+	clear_bit(GMU_PRIV_CX_GDSC_WAIT, &gmu->flags);
+	return ret;
+}
+
+void a6xx_gmu_disable_gdsc(struct adreno_device *adreno_dev)
+{
+	struct a6xx_gmu_device *gmu = to_a6xx_gmu(adreno_dev);
+
+	reinit_completion(&gmu->gdsc_gate);
+	set_bit(GMU_PRIV_CX_GDSC_WAIT, &gmu->flags);
+	regulator_disable(gmu->cx_gdsc);
+}
+
 int a6xx_gmu_device_start(struct adreno_device *adreno_dev)
 {
 	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
@@ -545,7 +578,7 @@ int a6xx_rscc_wakeup_sequence(struct adreno_device *adreno_dev)
 	if (!test_bit(GMU_PRIV_RSCC_SLEEP_DONE, &gmu->flags))
 		return 0;
 	 /* A660 has a replacement register */
-	if (adreno_is_a662(ADRENO_DEVICE(device)))
+	if (adreno_is_a662(adreno_dev) || adreno_is_a621(adreno_dev))
 		gmu_core_regread(device, A662_GPU_CC_GX_DOMAIN_MISC3, &val);
 	else if (adreno_is_a660(ADRENO_DEVICE(device)))
 		gmu_core_regread(device, A6XX_GPU_CC_GX_DOMAIN_MISC3, &val);
@@ -964,6 +997,9 @@ static int a6xx_complete_rpmh_votes(struct adreno_device *adreno_dev,
 	ret |= timed_poll_check_rscc(device, A6XX_RSCC_TCS3_DRV0_STATUS,
 			BIT(0), timeout, BIT(0));
 
+	if (ret)
+		dev_err(device->dev, "RPMH votes timedout: %d\n", ret);
+
 	return ret;
 }
 
@@ -1355,6 +1391,14 @@ void a6xx_gmu_register_config(struct adreno_device *adreno_dev)
 	gmu_core_regwrite(device, A6XX_GMU_HFI_QTBL_ADDR,
 			gmu->hfi.hfi_mem->gmuaddr);
 	gmu_core_regwrite(device, A6XX_GMU_HFI_QTBL_INFO, 1);
+
+	/*
+	 * For A6xx GMUAO interrupt line BIT[1] is combined for ipcc
+	 * and doorbell. Enable dbdWakeupEn interrupt for GMU to receive
+	 * IPC interrupt.
+	 */
+	if (ADRENO_FEATURE(adreno_dev, ADRENO_LSR))
+		gmu_core_regwrite(device, A6XX_GMU_AO_INTERRUPT_EN, BIT(1));
 
 	gmu_core_regwrite(device, A6XX_GMU_AHB_FENCE_RANGE_0,
 			GMU_FENCE_RANGE_MASK);
@@ -1834,7 +1878,7 @@ void a6xx_gmu_suspend(struct adreno_device *adreno_dev)
 	if (ADRENO_QUIRK(adreno_dev, ADRENO_QUIRK_CX_GDSC))
 		regulator_set_mode(gmu->cx_gdsc, REGULATOR_MODE_IDLE);
 
-	a6xx_cx_regulator_disable_wait(gmu->cx_gdsc, device, 5000);
+	a6xx_gmu_disable_gdsc(adreno_dev);
 
 	if (ADRENO_QUIRK(adreno_dev, ADRENO_QUIRK_CX_GDSC))
 		regulator_set_mode(gmu->cx_gdsc, REGULATOR_MODE_NORMAL);
@@ -2164,36 +2208,23 @@ void a6xx_gmu_aop_send_acd_state(struct a6xx_gmu_device *gmu, bool flag)
 			"AOP mbox send message failed: %d\n", ret);
 }
 
-int a6xx_gmu_enable_gdsc(struct adreno_device *adreno_dev)
-{
-	struct a6xx_gmu_device *gmu = to_a6xx_gmu(adreno_dev);
-	int ret;
-
-	ret = regulator_enable(gmu->cx_gdsc);
-	if (ret)
-		dev_err(&gmu->pdev->dev,
-			"Failed to enable GMU CX gdsc, error %d\n", ret);
-
-	return ret;
-}
-
 int a6xx_gmu_enable_clks(struct adreno_device *adreno_dev)
 {
 	struct a6xx_gmu_device *gmu = to_a6xx_gmu(adreno_dev);
 	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
 	int ret;
 
-	a6xx_rdpm_cx_freq_update(gmu, GMU_FREQ_MIN / 1000);
+	a6xx_rdpm_cx_freq_update(gmu, gmu->freqs[0] / 1000);
 
 	ret = kgsl_clk_set_rate(gmu->clks, gmu->num_clks, "gmu_clk",
-			GMU_FREQ_MIN);
+			gmu->freqs[0]);
 	if (ret) {
 		dev_err(&gmu->pdev->dev, "Unable to set the GMU clock\n");
 		return ret;
 	}
 
 	ret = kgsl_clk_set_rate(gmu->clks, gmu->num_clks, "hub_clk",
-			150000000);
+			adreno_dev->gmu_hub_clk_freq);
 	if (ret && ret != -ENODEV) {
 		dev_err(&gmu->pdev->dev, "Unable to set the HUB clock\n");
 		return ret;
@@ -2286,9 +2317,6 @@ static int a6xx_gmu_first_boot(struct adreno_device *adreno_dev)
 
 	device->gmu_fault = false;
 
-	if (ADRENO_FEATURE(adreno_dev, ADRENO_BCL))
-		adreno_dev->bcl_enabled = true;
-
 	kgsl_pwrctrl_set_state(device, KGSL_STATE_AWARE);
 
 	return 0;
@@ -2305,8 +2333,7 @@ clks_gdsc_off:
 	clk_bulk_disable_unprepare(gmu->num_clks, gmu->clks);
 
 gdsc_off:
-	/* Poll to make sure that the CX is off */
-	a6xx_cx_regulator_disable_wait(gmu->cx_gdsc, device, 5000);
+	a6xx_gmu_disable_gdsc(adreno_dev);
 
 	a6xx_rdpm_cx_freq_update(gmu, 0);
 
@@ -2328,6 +2355,13 @@ static int a6xx_gmu_boot(struct adreno_device *adreno_dev)
 	ret = a6xx_gmu_enable_clks(adreno_dev);
 	if (ret)
 		goto gdsc_off;
+
+	/*
+	 * TLB operations are skipped during slumber. Incase CX doesn't
+	 * go down, it can result in incorrect translations due to stale
+	 * TLB entries. Flush TLB before boot up to ensure fresh start.
+	 */
+	kgsl_mmu_flush_tlb(&device->mmu);
 
 	ret = a6xx_rscc_wakeup_sequence(adreno_dev);
 	if (ret)
@@ -2385,8 +2419,7 @@ clks_gdsc_off:
 	clk_bulk_disable_unprepare(gmu->num_clks, gmu->clks);
 
 gdsc_off:
-	/* Poll to make sure that the CX is off */
-	a6xx_cx_regulator_disable_wait(gmu->cx_gdsc, device, 5000);
+	a6xx_gmu_disable_gdsc(adreno_dev);
 
 	a6xx_rdpm_cx_freq_update(gmu, 0);
 
@@ -2465,9 +2498,8 @@ static void a6xx_free_gmu_globals(struct a6xx_gmu_device *gmu)
 
 		iommu_unmap(gmu->domain, md->gmuaddr, md->size);
 
-		if (md->hostptr)
-			dma_free_attrs(&gmu->pdev->dev, (size_t) md->size,
-					(void *)md->hostptr, md->physaddr, 0);
+		if (md->priv & KGSL_MEMDESC_SYSMEM)
+			kgsl_sharedmem_free(md);
 
 		memset(md, 0, sizeof(*md));
 	}
@@ -2556,6 +2588,70 @@ static int a6xx_gmu_reg_probe(struct adreno_device *adreno_dev)
 	return ret;
 }
 
+static int a6xx_gmu_clk_probe(struct adreno_device *adreno_dev)
+{
+	struct a6xx_gmu_device *gmu = to_a6xx_gmu(adreno_dev);
+	int ret, i;
+	int tbl_size;
+	int num_freqs;
+	int offset;
+
+	ret = devm_clk_bulk_get_all(&gmu->pdev->dev, &gmu->clks);
+	if (ret < 0)
+		return ret;
+
+	/*
+	 * Voting for apb_pclk will enable power and clocks required for
+	 * QDSS path to function. However, if QCOM_KGSL_QDSS_STM is not enabled,
+	 * QDSS is essentially unusable. Hence, if QDSS cannot be used,
+	 * don't vote for this clock.
+	 */
+	if (!IS_ENABLED(CONFIG_QCOM_KGSL_QDSS_STM)) {
+		for (i = 0; i < ret; i++) {
+			if (!strcmp(gmu->clks[i].id, "apb_pclk")) {
+				gmu->clks[i].clk = NULL;
+				break;
+			}
+		}
+	}
+
+	gmu->num_clks = ret;
+
+	/* Read the optional list of GMU frequencies */
+	if (of_get_property(gmu->pdev->dev.of_node,
+		"qcom,gmu-freq-table", &tbl_size) == NULL)
+		goto default_gmu_freq;
+
+	num_freqs = (tbl_size / sizeof(u32)) / 2;
+	if (num_freqs != ARRAY_SIZE(gmu->freqs))
+		goto default_gmu_freq;
+
+	for (i = 0; i < num_freqs; i++) {
+		offset = i * 2;
+		ret = of_property_read_u32_index(gmu->pdev->dev.of_node,
+			"qcom,gmu-freq-table", offset, &gmu->freqs[i]);
+		if (ret)
+			goto default_gmu_freq;
+		ret = of_property_read_u32_index(gmu->pdev->dev.of_node,
+			"qcom,gmu-freq-table", offset + 1, &gmu->vlvls[i]);
+		if (ret)
+			goto default_gmu_freq;
+	}
+	return 0;
+
+default_gmu_freq:
+	/* The GMU frequency table is missing or invalid. Go with a default */
+	gmu->freqs[0] = GMU_FREQ_MIN;
+	gmu->vlvls[0] = RPMH_REGULATOR_LEVEL_MIN_SVS;
+	gmu->freqs[1] = GMU_FREQ_MAX;
+	gmu->vlvls[1] = RPMH_REGULATOR_LEVEL_SVS;
+
+	if (adreno_is_a660(adreno_dev))
+		gmu->vlvls[0] = RPMH_REGULATOR_LEVEL_LOW_SVS;
+
+	return 0;
+}
+
 static void a6xx_gmu_rdpm_probe(struct a6xx_gmu_device *gmu,
 		struct kgsl_device *device)
 {
@@ -2574,9 +2670,37 @@ static void a6xx_gmu_rdpm_probe(struct a6xx_gmu_device *gmu,
 				res->start, resource_size(res));
 }
 
+static int gmu_cx_gdsc_event(struct notifier_block *nb,
+	unsigned long event, void *data)
+{
+	struct a6xx_gmu_device *gmu = container_of(nb, struct a6xx_gmu_device, gdsc_nb);
+	struct adreno_device *adreno_dev = a6xx_gmu_to_adreno(gmu);
+	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
+	u32 val, offset;
+
+	if (!(event & REGULATOR_EVENT_DISABLE) ||
+		!test_bit(GMU_PRIV_CX_GDSC_WAIT, &gmu->flags))
+		return 0;
+
+	offset = (adreno_is_a662(ADRENO_DEVICE(device)) ||
+		adreno_is_a621(ADRENO_DEVICE(device))) ?
+		A662_GPU_CC_CX_GDSCR : A6XX_GPU_CC_CX_GDSCR;
+
+	if (kgsl_regmap_read_poll_timeout(&device->regmap, offset, val,
+		!(val & BIT(31)), 100, 100 * 1000))
+		dev_err(device->dev, "GPU CX wait timeout.\n");
+
+	clear_bit(GMU_PRIV_CX_GDSC_WAIT, &gmu->flags);
+	complete_all(&gmu->gdsc_gate);
+
+	return 0;
+}
+
 static int a6xx_gmu_regulators_probe(struct a6xx_gmu_device *gmu,
 		struct platform_device *pdev)
 {
+	int ret;
+
 	gmu->cx_gdsc = devm_regulator_get(&pdev->dev, "vddcx");
 	if (IS_ERR(gmu->cx_gdsc)) {
 		if (PTR_ERR(gmu->cx_gdsc) != -EPROBE_DEFER)
@@ -2590,6 +2714,17 @@ static int a6xx_gmu_regulators_probe(struct a6xx_gmu_device *gmu,
 			dev_err(&pdev->dev, "Couldn't get the vdd gdsc\n");
 		return PTR_ERR(gmu->gx_gdsc);
 	}
+
+	gmu->gdsc_nb.notifier_call = gmu_cx_gdsc_event;
+	ret = devm_regulator_register_notifier(gmu->cx_gdsc, &gmu->gdsc_nb);
+
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to register gmu cx gdsc notifier: %d\n", ret);
+		return ret;
+	}
+
+	init_completion(&gmu->gdsc_gate);
+	complete_all(&gmu->gdsc_gate);
 
 	return 0;
 }
@@ -2677,7 +2812,7 @@ int a6xx_gmu_probe(struct kgsl_device *device,
 	struct a6xx_gmu_device *gmu = to_a6xx_gmu(adreno_dev);
 	struct device *dev = &pdev->dev;
 	struct resource *res;
-	int ret, i;
+	int ret;
 
 	gmu->pdev = pdev;
 
@@ -2704,24 +2839,9 @@ int a6xx_gmu_probe(struct kgsl_device *device,
 	if (ret)
 		return ret;
 
-	ret = devm_clk_bulk_get_all(&pdev->dev, &gmu->clks);
+	ret = a6xx_gmu_clk_probe(adreno_dev);
 	if (ret < 0)
 		return ret;
-	/*
-	 * Voting for apb_pclk will enable power and clocks required for
-	 * QDSS path to function. However, if QCOM_KGSL_QDSS_STM is not enabled,
-	 * QDSS is essentially unusable. Hence, if QDSS cannot be used,
-	 * don't vote for this clock.
-	 */
-	if (!IS_ENABLED(CONFIG_QCOM_KGSL_QDSS_STM)) {
-		for (i = 0; i < ret; i++) {
-			if (!strcmp(gmu->clks[i].id, "apb_pclk")) {
-				gmu->clks[i].clk = NULL;
-				break;
-			}
-		}
-	}
-	gmu->num_clks = ret;
 
 	/* Set up GMU IOMMU and shared memory with GMU */
 	ret = a6xx_gmu_iommu_init(gmu);
@@ -2760,7 +2880,7 @@ int a6xx_gmu_probe(struct kgsl_device *device,
 	gmu->log_group_mask = 0x3;
 
 	/* GMU sysfs nodes setup */
-	kobject_init_and_add(&gmu->log_kobj, &log_kobj_type, &dev->kobj, "log");
+	(void) kobject_init_and_add(&gmu->log_kobj, &log_kobj_type, &dev->kobj, "log");
 
 	of_property_read_u32(gmu->pdev->dev.of_node, "qcom,gmu-perf-ddr-bw",
 		&gmu->perf_ddr_bw);
@@ -2864,8 +2984,7 @@ static int a6xx_gmu_power_off(struct adreno_device *adreno_dev)
 
 	clk_bulk_disable_unprepare(gmu->num_clks, gmu->clks);
 
-	/* Poll to make sure that the CX is off */
-	a6xx_cx_regulator_disable_wait(gmu->cx_gdsc, device, 5000);
+	a6xx_gmu_disable_gdsc(adreno_dev);
 
 	a6xx_rdpm_cx_freq_update(gmu, 0);
 
@@ -2943,6 +3062,14 @@ static int a6xx_gpu_boot(struct adreno_device *adreno_dev)
 		a6xx_disable_gpu_irq(adreno_dev);
 		goto oob_clear;
 	}
+
+	/*
+	 * At this point it is safe to assume that we recovered. Setting
+	 * this field allows us to take a new snapshot for the next failure
+	 * if we are prioritizing the first unrecoverable snapshot.
+	 */
+	if (device->snapshot)
+		device->snapshot->recovered = true;
 
 	/* Start the dispatcher */
 	adreno_dispatcher_start(device);
@@ -3058,6 +3185,17 @@ static int a6xx_first_boot(struct adreno_device *adreno_dev)
 	set_bit(GMU_PRIV_GPU_STARTED, &gmu->flags);
 
 	/*
+	 * BCL needs respective Central Broadcast register to
+	 * be programed from TZ. This programing happens only
+	 * when zap shader firmware load is successful. Zap firmware
+	 * load can fail in boot up path hence enable BCL only after we
+	 * successfully complete first boot to ensure that Central
+	 * Broadcast register was programed before enabling BCL.
+	 */
+	if (ADRENO_FEATURE(adreno_dev, ADRENO_BCL))
+		adreno_dev->bcl_enabled = true;
+
+	/*
 	 * There is a possible deadlock scenario during kgsl firmware reading
 	 * (request_firmware) and devfreq update calls. During first boot, kgsl
 	 * device mutex is held and then request_firmware is called for reading
@@ -3120,6 +3258,11 @@ static int a6xx_power_off(struct adreno_device *adreno_dev)
 		goto no_gx_power;
 	}
 
+	if (a6xx_irq_pending(adreno_dev)) {
+		a6xx_gmu_oob_clear(device, oob_gpu);
+		return -EBUSY;
+	}
+
 	kgsl_pwrscale_update_stats(device);
 
 	/* Save active coresight registers if applicable */
@@ -3156,6 +3299,9 @@ no_gx_power:
 	if (!IS_ERR_OR_NULL(adreno_dev->gpuhtw_llc_slice))
 		llcc_slice_deactivate(adreno_dev->gpuhtw_llc_slice);
 
+	if (!IS_ERR_OR_NULL(adreno_dev->gpumv_llc_slice))
+		llcc_slice_deactivate(adreno_dev->gpumv_llc_slice);
+
 	clear_bit(GMU_PRIV_GPU_STARTED, &gmu->flags);
 
 	del_timer_sync(&device->idle_timer);
@@ -3175,29 +3321,36 @@ static void gmu_idle_check(struct work_struct *work)
 					struct kgsl_device, idle_check_ws);
 	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
 	struct a6xx_gmu_device *gmu = to_a6xx_gmu(adreno_dev);
+	int ret;
 
 	mutex_lock(&device->mutex);
 
 	if (test_bit(GMU_DISABLE_SLUMBER, &device->gmu_core.flags))
 		goto done;
 
-	if (!atomic_read(&device->active_cnt)) {
-		if (test_bit(GMU_PRIV_GPU_STARTED, &gmu->flags)) {
-			spin_lock(&device->submit_lock);
+	if (atomic_read(&device->active_cnt)) {
+		kgsl_pwrscale_update(device);
+		kgsl_start_idle_timer(device);
+		goto done;
+	}
 
-			if (device->submit_now) {
-				spin_unlock(&device->submit_lock);
-				kgsl_pwrscale_update(device);
-				kgsl_start_idle_timer(device);
-				goto done;
-			}
+	if (!test_bit(GMU_PRIV_GPU_STARTED, &gmu->flags))
+		goto done;
 
-			device->slumber = true;
-			spin_unlock(&device->submit_lock);
+	spin_lock(&device->submit_lock);
 
-			a6xx_power_off(adreno_dev);
-		}
-	} else {
+	if (device->submit_now) {
+		spin_unlock(&device->submit_lock);
+		kgsl_pwrscale_update(device);
+		kgsl_start_idle_timer(device);
+		goto done;
+	}
+
+	device->slumber = true;
+	spin_unlock(&device->submit_lock);
+
+	ret = a6xx_power_off(adreno_dev);
+	if (ret == -EBUSY) {
 		kgsl_pwrscale_update(device);
 		kgsl_start_idle_timer(device);
 	}

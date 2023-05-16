@@ -51,8 +51,8 @@
 #include "arm-smmu.h"
 #include "../../iommu-logger.h"
 #include "../../qcom-dma-iommu-generic.h"
-#include "../../qcom-io-pgtable.h"
 #include <linux/qcom-iommu-util.h>
+#include <linux/qcom-io-pgtable.h>
 
 #define CREATE_TRACE_POINTS
 #include "arm-smmu-trace.h"
@@ -146,7 +146,7 @@ static int __arm_smmu_domain_set_attr(struct iommu_domain *domain,
 static int arm_smmu_domain_get_attr(struct iommu_domain *domain,
 				    enum iommu_attr attr, void *data);
 static void arm_smmu_free_pgtable(void *cookie, void *virt, int order, bool deferred_free);
-static void __arm_smmu_qcom_tlb_sync(struct iommu_domain *domain);
+static void __arm_smmu_flush_iotlb_all(struct iommu_domain *domain, bool force);
 
 static inline int arm_smmu_rpm_get(struct arm_smmu_device *smmu)
 {
@@ -1422,7 +1422,7 @@ static void arm_smmu_free_pgtable(void *cookie, void *virt, int order,
 		struct page *page = virt_to_page(virt);
 
 		spin_lock_irqsave(&smmu_domain->iotlb_gather_lock, flags);
-		smmu_domain->deferred_sync = true;
+		smmu_domain->deferred_flush = true;
 		list_add(&page->lru, &smmu_domain->iotlb_gather_freelist);
 		spin_unlock_irqrestore(&smmu_domain->iotlb_gather_lock, flags);
 	} else {
@@ -1451,7 +1451,7 @@ static void arm_smmu_qcom_tlb_add_inv(void *cookie)
 	unsigned long flags;
 
 	spin_lock_irqsave(&smmu_domain->iotlb_gather_lock, flags);
-	smmu_domain->deferred_sync = true;
+	smmu_domain->deferred_flush = true;
 	spin_unlock_irqrestore(&smmu_domain->iotlb_gather_lock, flags);
 }
 
@@ -1459,7 +1459,9 @@ static void arm_smmu_qcom_tlb_sync(void *cookie)
 {
 	struct arm_smmu_domain *smmu_domain = cookie;
 
-	__arm_smmu_qcom_tlb_sync(&smmu_domain->domain);
+	arm_smmu_rpm_get(smmu_domain->smmu);
+	__arm_smmu_flush_iotlb_all(&smmu_domain->domain, false);
+	arm_smmu_rpm_put(smmu_domain->smmu);
 }
 
 static const struct qcom_iommu_pgtable_ops arm_smmu_pgtable_ops = {
@@ -1737,6 +1739,14 @@ static int arm_smmu_init_domain_context(struct iommu_domain *domain,
 	 */
 	if (test_bit(DOMAIN_ATTR_ATOMIC, smmu_domain->attributes)) {
 		smmu_domain->rpm_always_on = true;
+		/* During device shutdown, if non atomic client is doing the register
+		 * space access, it experiencing the unclocked access error becaue of
+		 * force suspend from the device remove path, to avoid such case
+		 * adding smmu atomic refcount, to know is there any atomic client or
+		 * not, if there is no atomic client it will skip the force suspend and
+		 * power off.
+		 */
+		smmu->atomic_pwr_refcount++;
 		arm_smmu_rpm_get(smmu);
 	}
 
@@ -1770,7 +1780,8 @@ static void arm_smmu_destroy_domain_context(struct iommu_domain *domain)
 	struct arm_smmu_device *smmu = smmu_domain->smmu;
 	struct arm_smmu_cfg *cfg = &smmu_domain->cfg;
 	int irq;
-	int ret;
+	int ret, i;
+	bool pinned = false;
 
 	if (!smmu || domain->type == IOMMU_DOMAIN_IDENTITY)
 		return;
@@ -1783,8 +1794,10 @@ static void arm_smmu_destroy_domain_context(struct iommu_domain *domain)
 	 * Matches with call to arm_smmu_rpm_get in
 	 * arm_smmu_init_domain_contxt.
 	 */
-	if (smmu_domain->rpm_always_on)
+	if (smmu_domain->rpm_always_on) {
+		smmu->atomic_pwr_refcount--;
 		arm_smmu_rpm_put(smmu);
+	}
 
 	/*
 	 * Disable the context bank and free the page tables before freeing
@@ -1803,7 +1816,15 @@ static void arm_smmu_destroy_domain_context(struct iommu_domain *domain)
 	arm_smmu_secure_pool_destroy(smmu_domain);
 	arm_smmu_unassign_table(smmu_domain);
 	arm_smmu_secure_domain_unlock(smmu_domain);
-	__arm_smmu_free_bitmap(smmu->context_map, cfg->cbndx);
+
+	for (i = 0; i < smmu->num_mapping_groups; i++)
+		if ((cfg->cbndx == smmu->s2crs[i].cbndx) &&
+		    (smmu->s2crs[i].pinned)) {
+			pinned = true;
+		}
+
+	if (!pinned)
+		__arm_smmu_free_bitmap(smmu->context_map, cfg->cbndx);
 
 	arm_smmu_rpm_put(smmu);
 	arm_smmu_domain_reinit(smmu_domain);
@@ -1860,8 +1881,12 @@ static void arm_smmu_write_smr(struct arm_smmu_device *smmu, int idx)
 	u32 reg = FIELD_PREP(ARM_SMMU_SMR_ID, smr->id) |
 		  FIELD_PREP(ARM_SMMU_SMR_MASK, smr->mask);
 
-	if (!(smmu->features & ARM_SMMU_FEAT_EXIDS) && smr->valid)
+	if (!(smmu->features & ARM_SMMU_FEAT_EXIDS) && smr->valid) {
 		reg |= ARM_SMMU_SMR_VALID;
+		smr->state = SMR_PROGRAMMED;
+	} else {
+		smr->state = SMR_INVALID;
+	}
 	arm_smmu_gr0_write(smmu, ARM_SMMU_GR0_SMR(idx), reg);
 }
 
@@ -2024,6 +2049,7 @@ static int arm_smmu_master_alloc_smes(struct device *dev)
 			smrs[idx].id = sid;
 			smrs[idx].mask = mask;
 			smrs[idx].valid = true;
+			smrs[idx].state = SMR_ALLOCATED;
 		}
 		smmu->s2crs[idx].count++;
 		cfg->smendx[i] = (s16)idx;
@@ -2500,7 +2526,10 @@ static void arm_smmu_flush_iotlb_all(struct iommu_domain *domain)
 
 	if (smmu_domain->flush_ops) {
 		arm_smmu_rpm_get(smmu);
-		smmu_domain->flush_ops->tlb_flush_all(smmu_domain);
+		/* Secure pages may be freed to the secure pool after TLB maintenance. */
+		arm_smmu_secure_domain_lock(smmu_domain);
+		__arm_smmu_flush_iotlb_all(domain, true);
+		arm_smmu_secure_domain_unlock(smmu_domain);
 		arm_smmu_rpm_put(smmu);
 	}
 }
@@ -2509,28 +2538,30 @@ static void arm_smmu_flush_iotlb_all(struct iommu_domain *domain)
  * Caller must call arm_smmu_rpm_get(). Secure context banks must also hold
  * arm_smmu_secure_domain_lock.
  */
-static void __arm_smmu_qcom_tlb_sync(struct iommu_domain *domain)
+static void __arm_smmu_flush_iotlb_all(struct iommu_domain *domain, bool force)
 {
 	struct arm_smmu_domain *smmu_domain = to_smmu_domain(domain);
-	struct arm_smmu_device *smmu = smmu_domain->smmu;
 	LIST_HEAD(list);
 	struct page *page, *tmp;
 	unsigned long flags;
 
 	spin_lock_irqsave(&smmu_domain->iotlb_gather_lock, flags);
-	if (!smmu_domain->deferred_sync) {
+	/*
+	 * iommu_flush_iotlb_all currently has 2 users which do not set
+	 * deferred_flush through qcom_iommu_pgtable_ops->tlb_add_inv
+	 * 1) GPU - old implementation uses upstream io-pgtable-arm.c
+	 * 2) fastmap
+	 * once these users have gone away, force parameter can be removed.
+	 */
+	if (!force && !smmu_domain->deferred_flush) {
 		spin_unlock_irqrestore(&smmu_domain->iotlb_gather_lock, flags);
 		return;
 	}
 
-	if (smmu->version == ARM_SMMU_V2 ||
-	    smmu_domain->stage == ARM_SMMU_DOMAIN_S1)
-		arm_smmu_tlb_inv_context_s1(smmu_domain);
-	else
-		arm_smmu_tlb_sync_global(smmu);
+	smmu_domain->flush_ops->tlb_flush_all(smmu_domain);
 
 	list_splice_init(&smmu_domain->iotlb_gather_freelist, &list);
-	smmu_domain->deferred_sync = false;
+	smmu_domain->deferred_flush = false;
 
 	list_for_each_entry_safe(page, tmp, &list, lru) {
 		list_del(&page->lru);
@@ -2549,12 +2580,7 @@ static void arm_smmu_iotlb_sync(struct iommu_domain *domain,
 	if (!smmu)
 		return;
 
-	arm_smmu_rpm_get(smmu);
-	/* Secure pages may be freed to the secure pool after TLB maintenance. */
-	arm_smmu_secure_domain_lock(smmu_domain);
-	__arm_smmu_qcom_tlb_sync(domain);
-	arm_smmu_secure_domain_unlock(smmu_domain);
-	arm_smmu_rpm_put(smmu);
+	arm_smmu_flush_iotlb_all(domain);
 }
 
 static phys_addr_t __arm_smmu_iova_to_phys_hard(struct iommu_domain *domain,
@@ -3219,14 +3245,21 @@ static int __arm_smmu_sid_switch(struct device *dev, void *data)
 		return 0;
 
 	smmu = cfg->smmu;
+
+	arm_smmu_rpm_get(smmu);
 	for_each_cfg_sme(cfg, fwspec, i, idx) {
 		if (dir == SID_RELEASE) {
 			arm_smmu_gr0_write(smmu, ARM_SMMU_GR0_SMR(idx), 0);
 			arm_smmu_gr0_write(smmu, ARM_SMMU_GR0_S2CR(idx), 0);
+			/* Update smr structure to inline with actual operation */
+			smmu->smrs[idx].state = SMR_ALLOCATED;
 		} else {
 			arm_smmu_write_sme(smmu, idx);
 		}
 	}
+	 /* Add barrier to ensure that the SMR register writes is completed. */
+	wmb();
+	arm_smmu_rpm_put(smmu);
 	return 0;
 }
 
@@ -3370,47 +3403,98 @@ static int arm_smmu_handoff_cbs(struct arm_smmu_device *smmu)
 {
 	u32 i, smr, s2cr;
 	u32 index;
+	struct arm_smmu_smr	smrs;
+	struct arm_smmu_smr	*handoff_smrs;
+	int num_handoff_smrs;
+	const __be32 *cell;
 
-	for (index = 0;; index++) {
-		if (of_property_read_u32_index(smmu->dev->of_node,
-				"qcom,handoff-smrs", index, &i) < 0)
-			break;
+	cell = of_get_property(smmu->dev->of_node, "qcom,handoff-smrs", NULL);
+	if (!cell)
+		return 0;
 
-		if (i >= smmu->num_mapping_groups) {
-			dev_err(smmu->dev, "Invalid qcom,handoff-smrs property, only %d smrs\n",
-				smmu->num_mapping_groups);
-			break;
-		}
+	num_handoff_smrs = of_property_count_elems_of_size(smmu->dev->of_node,
+					"qcom,handoff-smrs", sizeof(u32) * 2);
+	if (num_handoff_smrs < 0)
+		return 0;
+
+	handoff_smrs = kcalloc(num_handoff_smrs, sizeof(*handoff_smrs),
+			       GFP_KERNEL);
+	if (!handoff_smrs)
+		return -ENOMEM;
+
+	for (i = 0; i < num_handoff_smrs; i++) {
+		handoff_smrs[i].id = of_read_number(cell++, 1);
+		handoff_smrs[i].mask = of_read_number(cell++, 1);
+		handoff_smrs[i].valid = true;
+	}
+
+
+	for (i = 0; i < smmu->num_mapping_groups; ++i) {
 
 		smr = arm_smmu_gr0_read(smmu, ARM_SMMU_GR0_SMR(i));
-		s2cr = arm_smmu_gr0_read(smmu, ARM_SMMU_GR0_S2CR(i));
 
-		smmu->smrs[i].id = FIELD_GET(ARM_SMMU_SMR_ID, smr);
 		if (smmu->features & ARM_SMMU_FEAT_EXIDS) {
-			smmu->smrs[i].valid = FIELD_GET(ARM_SMMU_S2CR_EXIDVALID, s2cr);
-			smmu->smrs[i].mask = FIELD_GET(ARM_SMMU_SMR_MASK, smr);
+			s2cr = arm_smmu_gr0_read(smmu, ARM_SMMU_GR0_S2CR(i));
+			smrs.valid = FIELD_GET(ARM_SMMU_S2CR_EXIDVALID, s2cr);
+			if (!smrs.valid)
+				continue;
+
+			smrs.id = FIELD_GET(ARM_SMMU_SMR_ID, smr);
+			smrs.mask = FIELD_GET(ARM_SMMU_SMR_MASK, smr);
+			smrs.state = SMR_PROGRAMMED;
+
 		} else {
-			smmu->smrs[i].valid = FIELD_GET(ARM_SMMU_SMR_VALID, smr);
+			smrs.valid = FIELD_GET(ARM_SMMU_SMR_VALID, smr);
+			if (!smrs.valid)
+				continue;
+
+			smrs.id = FIELD_GET(ARM_SMMU_SMR_ID, smr);
 			/*
 			 * The SMR mask covers bits 30:16 when extended stream
 			 * matching is not enabled.
 			 */
-			smmu->smrs[i].mask = FIELD_GET(ARM_SMMU_SMR_MASK,
-						       smr & ~ARM_SMMU_SMR_VALID);
+			smrs.mask = FIELD_GET(ARM_SMMU_SMR_MASK,
+					      smr & ~ARM_SMMU_SMR_VALID);
+			smrs.state = SMR_PROGRAMMED;
 		}
 
-		smmu->s2crs[i].group = NULL;
-		smmu->s2crs[i].count = 0;
-		smmu->s2crs[i].type = FIELD_GET(ARM_SMMU_S2CR_TYPE, s2cr);
-		smmu->s2crs[i].privcfg = FIELD_GET(ARM_SMMU_S2CR_PRIVCFG, s2cr);
-		smmu->s2crs[i].cbndx = FIELD_GET(ARM_SMMU_S2CR_CBNDX, s2cr);
+		for (index = 0; index < num_handoff_smrs; index++) {
 
-		if (!smmu->smrs[i].valid)
-			continue;
+			if (!handoff_smrs[index].valid)
+				continue;
 
-		smmu->s2crs[i].pinned = true;
-		bitmap_set(smmu->context_map, smmu->s2crs[i].cbndx, 1);
+			if ((handoff_smrs[index].mask & smrs.mask) == handoff_smrs[index].mask &&
+			    !((handoff_smrs[index].id ^ smrs.id) & ~smrs.mask)) {
+
+				dev_dbg(smmu->dev,
+					"handoff-smrs match idx %d, id, 0x%x, mask 0x%x\n",
+					i, smrs.id, smrs.mask);
+
+				s2cr = arm_smmu_gr0_read(smmu, ARM_SMMU_GR0_S2CR(i));
+
+				smmu->smrs[i] = smrs;
+
+				smmu->s2crs[i].group = NULL;
+				smmu->s2crs[i].count = 0;
+				smmu->s2crs[i].type = FIELD_GET(ARM_SMMU_S2CR_TYPE, s2cr);
+				smmu->s2crs[i].privcfg = FIELD_GET(ARM_SMMU_S2CR_PRIVCFG, s2cr);
+				smmu->s2crs[i].cbndx = FIELD_GET(ARM_SMMU_S2CR_CBNDX, s2cr);
+
+				smmu->s2crs[i].pinned = true;
+				bitmap_set(smmu->context_map, smmu->s2crs[i].cbndx, 1);
+				handoff_smrs[index].valid = false;
+
+				break;
+
+			} else {
+				dev_dbg(smmu->dev,
+					"handoff-smrs no match idx %d, id, 0x%x, mask 0x%x\n",
+					i, smrs.id, smrs.mask);
+			}
+		}
 	}
+
+	kfree(handoff_smrs);
 
 	return 0;
 }
@@ -4078,10 +4162,12 @@ static int arm_smmu_device_remove(struct platform_device *pdev)
 	arm_smmu_gr0_write(smmu, ARM_SMMU_GR0_sCR0, ARM_SMMU_sCR0_CLIENTPD);
 	arm_smmu_rpm_put(smmu);
 
-	if (pm_runtime_enabled(smmu->dev))
-		pm_runtime_force_suspend(smmu->dev);
-	else
-		arm_smmu_power_off(smmu, smmu->pwr);
+	if (smmu->atomic_pwr_refcount > 0) {
+		if (pm_runtime_enabled(smmu->dev))
+			pm_runtime_force_suspend(smmu->dev);
+		else
+			arm_smmu_power_off(smmu, smmu->pwr);
+	}
 
 	return 0;
 }
@@ -4146,62 +4232,6 @@ static const struct dev_pm_ops arm_smmu_pm_ops = {
 			   arm_smmu_runtime_resume, NULL)
 };
 
-static const struct of_device_id qsmmuv500_tbu_of_match[] = {
-	{.compatible = "qcom,qsmmuv500-tbu"},
-	{}
-};
-
-static int qsmmuv500_tbu_probe(struct platform_device *pdev)
-{
-	struct resource *res;
-	struct device *dev = &pdev->dev;
-	struct qsmmuv500_tbu_device *tbu;
-	const __be32 *cell;
-	int len;
-
-	tbu = devm_kzalloc(dev, sizeof(*tbu), GFP_KERNEL);
-	if (!tbu)
-		return -ENOMEM;
-
-	INIT_LIST_HEAD(&tbu->list);
-	tbu->dev = dev;
-	spin_lock_init(&tbu->halt_lock);
-
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "base");
-	tbu->base = devm_ioremap_resource(dev, res);
-	if (IS_ERR(tbu->base))
-		return PTR_ERR(tbu->base);
-
-	cell = of_get_property(dev->of_node, "qcom,stream-id-range", &len);
-	if (!cell || len < 8)
-		return -EINVAL;
-
-	tbu->sid_start = of_read_number(cell, 1);
-	tbu->num_sids = of_read_number(cell + 1, 1);
-
-	/* Return -EINVAL only if property not present */
-	tbu->has_micro_idle = of_property_read_bool(dev->of_node, "qcom,micro-idle");
-
-	tbu->pwr = arm_smmu_init_power_resources(dev);
-	if (IS_ERR(tbu->pwr))
-		return PTR_ERR(tbu->pwr);
-
-	if (tbu->has_micro_idle) {
-		tbu->pwr->resume = arm_smmu_micro_idle_wake;
-		tbu->pwr->suspend = arm_smmu_micro_idle_allow;
-	}
-
-	dev_set_drvdata(dev, tbu);
-	return 0;
-}
-
-static struct platform_driver qsmmuv500_tbu_driver = {
-	.driver	= {
-		.name		= "qsmmuv500-tbu",
-		.of_match_table	= of_match_ptr(qsmmuv500_tbu_of_match),
-	},
-	.probe	= qsmmuv500_tbu_probe,
-};
 
 static struct platform_driver arm_smmu_driver = {
 	.driver	= {

@@ -66,3 +66,4 @@ blocklist mmrm_test_module
 blocklist q5drv_linux
 blocklist slg51000-regulator
 blocklist sony_camera
+blocklist limits_stat

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 /*
@@ -746,7 +747,7 @@ int kgsl_drawobj_sync_add_sync(struct kgsl_device *device,
 		return drawobj_add_sync_timeline(device,
 			syncobj, sync->priv, sync->size);
 
-	dev_err(device->dev, "bad syncpoint type %d for ctxt %d\n",
+	dev_err(device->dev, "bad syncpoint type %d for ctxt %u\n",
 		sync->type, drawobj->context->id);
 
 	return -EINVAL;
@@ -791,7 +792,7 @@ static void add_profiling_buffer(struct kgsl_device *device,
 
 	if (entry == NULL) {
 		dev_err(device->dev,
-			"ignore bad profile buffer ctxt %d id %d offset %lld gpuaddr %llx size %lld\n",
+			"ignore bad profile buffer ctxt %u id %d offset %lld gpuaddr %llx size %lld\n",
 			drawobj->context->id, id, offset, gpuaddr, size);
 		return;
 	}
@@ -1126,7 +1127,9 @@ struct kgsl_drawobj_cmd *kgsl_drawobj_cmd_create(struct kgsl_device *device,
 		| KGSL_DRAWOBJ_PWR_CONSTRAINT
 		| KGSL_DRAWOBJ_MEMLIST
 		| KGSL_DRAWOBJ_PROFILING
-		| KGSL_DRAWOBJ_PROFILING_KTIME);
+		| KGSL_DRAWOBJ_PROFILING_KTIME
+		| KGSL_DRAWOBJ_START_RECURRING
+		| KGSL_DRAWOBJ_STOP_RECURRING);
 
 	INIT_LIST_HEAD(&cmdobj->cmdlist);
 	INIT_LIST_HEAD(&cmdobj->memlist);
@@ -1346,7 +1349,7 @@ int kgsl_drawobj_cmd_add_cmdlist(struct kgsl_device *device,
 		/* Sanity check the flags */
 		if (!(obj.flags & CMDLIST_FLAGS)) {
 			dev_err(device->dev,
-				     "invalid cmdobj ctxt %d flags %d id %d offset %llu addr %llx size %llu\n",
+				     "invalid cmdobj ctxt %u flags %d id %d offset %llu addr %llx size %llu\n",
 				     baseobj->context->id, obj.flags, obj.id,
 				     obj.offset, obj.gpuaddr, obj.size);
 			return -EINVAL;
@@ -1384,7 +1387,7 @@ int kgsl_drawobj_cmd_add_memlist(struct kgsl_device *device,
 
 		if (!(obj.flags & KGSL_OBJLIST_MEMOBJ)) {
 			dev_err(device->dev,
-				     "invalid memobj ctxt %d flags %d id %d offset %lld addr %lld size %lld\n",
+				     "invalid memobj ctxt %u flags %d id %d offset %lld addr %lld size %lld\n",
 				     DRAWOBJ(cmdobj)->context->id, obj.flags,
 				     obj.id, obj.offset, obj.gpuaddr,
 				     obj.size);
