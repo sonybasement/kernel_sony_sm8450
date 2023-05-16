@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/of.h>
@@ -24,6 +25,10 @@
 #include <linux/wait.h>
 #include <linux/delay.h>
 #include <linux/version.h>
+#include <soc/qcom/minidump.h>
+
+#define CREATE_TRACE_POINTS
+#include "gsi_trace.h"
 
 #define GSI_CMD_TIMEOUT (5*HZ)
 #define GSI_FC_CMD_TIMEOUT (2*GSI_CMD_TIMEOUT)
@@ -46,15 +51,6 @@
 #define GSI_LSB_MASK 0x00000000FFFFFFFFULL
 #define GSI_MSB(num) ((u32)((num & GSI_MSB_MASK) >> 32))
 #define GSI_LSB(num) ((u32)(num & GSI_LSB_MASK))
-
-#define GSI_INST_RAM_FW_VER_OFFSET			(0)
-#define GSI_INST_RAM_FW_VER_GSI_3_0_OFFSET	(64)
-#define GSI_INST_RAM_FW_VER_HW_MASK			(0xFC00)
-#define GSI_INST_RAM_FW_VER_HW_SHIFT		(10)
-#define GSI_INST_RAM_FW_VER_FLAVOR_MASK		(0x380)
-#define GSI_INST_RAM_FW_VER_FLAVOR_SHIFT	(7)
-#define GSI_INST_RAM_FW_VER_FW_MASK			(0x7f)
-#define GSI_INST_RAM_FW_VER_FW_SHIFT		(0)
 
 #define GSI_FC_NUM_WORDS_PER_CHNL_SHRAM		(20)
 #define GSI_FC_STATE_INDEX_SHRAM			(7)
@@ -831,6 +827,15 @@ static void gsi_handle_ieob(int ee)
 			msk = gsihal_read_reg_nk(GSI_EE_n_CNTXT_SRC_IEOB_IRQ_MSK_k, ee, k);
 			gsihal_write_reg_nk(GSI_EE_n_CNTXT_SRC_IEOB_IRQ_CLR_k, ee, k, ch & msk);
 
+			if (trace_gsi_qtimer_enabled())
+			{
+				uint64_t qtimer = 0;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0))
+				qtimer = arch_timer_read_cntpct_el0();
+#endif
+				trace_gsi_qtimer(qtimer, false, 0, ch, msk);
+			}
+
 			for (i = 0; i < GSI_STTS_REG_BITS; i++) {
 				if ((1 << i) & ch & msk) {
 					evt_hdl = i + (GSI_STTS_REG_BITS * k);
@@ -1132,6 +1137,14 @@ static irqreturn_t gsi_msi_isr(int irq, void *ctxt)
 	evt = gsi_ctx->msi.evt[msi];
 	evt_ctxt = &gsi_ctx->evtr[evt];
 
+	if (trace_gsi_qtimer_enabled()) {
+		uint64_t qtimer = 0;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0))
+		qtimer = arch_timer_read_cntpct_el0();
+#endif
+		trace_gsi_qtimer(qtimer, true, evt, 0, 0);
+	}
+
 	if (evt_ctxt->props.intf != GSI_EVT_CHTYPE_GPI_EV) {
 		GSIERR("Unexpected irq intf %d\n",
 			evt_ctxt->props.intf);
@@ -1227,6 +1240,7 @@ static uint32_t gsi_get_max_event_rings(enum gsi_ver ver)
 		max_ev = hw_param.gsi_ev_ch_num;
 		break;
 	case GSI_VER_3_0:
+	case GSI_VER_5_2:
 		gsihal_read_reg_n_fields(GSI_EE_n_GSI_HW_PARAM_4,
 			gsi_ctx->per.ee, &hw_param4);
 		max_ev = hw_param4.gsi_num_ev_per_ee;
@@ -1300,6 +1314,8 @@ EXPORT_SYMBOL(gsi_map_base);
 
 int gsi_unmap_base(void)
 {
+	gsihal_destroy();
+
 	if (!gsi_ctx) {
 		pr_err("%s:%d gsi context not allocated\n", __func__, __LINE__);
 		return -GSI_STATUS_NODEV;
@@ -1380,6 +1396,7 @@ static int __gsi_request_msi_irq(unsigned long msi)
 
 static int __gsi_allocate_msis(void)
 {
+#ifdef CONFIG_GENERIC_MSI_IRQ_DOMAIN
 	int result = 0;
 	struct msi_desc *desc = NULL;
 	size_t size = 0;
@@ -1429,6 +1446,9 @@ err_free_msis:
 	memset(gsi_ctx->msi.allocated, 0, size);
 
 	return result;
+#else
+	return GSI_STATUS_SUCCESS;
+#endif
 }
 
 int gsi_register_device(struct gsi_per_props *props, unsigned long *dev_hdl)
@@ -1724,7 +1744,9 @@ err_free_msis:
 	if (gsi_ctx->msi.num) {
 		size_t size =
 			sizeof(unsigned long) * BITS_TO_LONGS(gsi_ctx->msi.num);
+#ifdef CONFIG_GENERIC_MSI_IRQ_DOMAIN
 		platform_msi_domain_free_irqs(gsi_ctx->dev);
+#endif
 		memset(gsi_ctx->msi.allocated, 0, size);
 	}
 
@@ -1831,14 +1853,14 @@ int gsi_deregister_device(unsigned long dev_hdl, bool force)
 	__gsi_config_glob_irq(gsi_ctx->per.ee, ~0, 0);
 	__gsi_config_gen_irq(gsi_ctx->per.ee, ~0, 0);
 
+#ifdef CONFIG_GENERIC_MSI_IRQ_DOMAIN
 	if (gsi_ctx->msi.num)
 		platform_msi_domain_free_irqs(gsi_ctx->dev);
+#endif
 
 	devm_free_irq(gsi_ctx->dev, gsi_ctx->per.irq, gsi_ctx);
-	gsihal_destroy();
 	gsi_unmap_base();
-	memset(gsi_ctx, 0, sizeof(*gsi_ctx));
-
+	gsi_ctx->per_registered = false;
 	return GSI_STATUS_SUCCESS;
 }
 EXPORT_SYMBOL(gsi_deregister_device);
@@ -2099,7 +2121,12 @@ static inline uint64_t gsi_read_event_ring_rp_ddr(struct gsi_evt_ring_props* pro
 static inline uint64_t gsi_read_event_ring_rp_reg(struct gsi_evt_ring_props* props,
 	uint8_t id, int ee)
 {
-	return gsihal_read_reg_nk(GSI_EE_n_EV_CH_k_CNTXT_4, ee, id);
+	uint64_t rp;
+
+	rp = gsihal_read_reg_nk(GSI_EE_n_EV_CH_k_CNTXT_4, ee, id);
+	rp |= ((uint64_t)gsihal_read_reg_nk(GSI_EE_n_EV_CH_k_CNTXT_5, ee, id)) << 32;
+
+	return rp;
 }
 
 static int __gsi_pair_msi(struct gsi_evt_ctx *ctx,
@@ -2707,9 +2734,11 @@ static void gsi_program_chan_ctx(struct gsi_chan_props *props, unsigned int ee,
 		break;
 	case GSI_CHAN_PROT_AQC:
 	case GSI_CHAN_PROT_11AD:
+	case GSI_CHAN_PROT_MHIC:
 	case GSI_CHAN_PROT_RTK:
 	case GSI_CHAN_PROT_QDSS:
 	case GSI_CHAN_PROT_NTN:
+	case GSI_CHAN_PROT_WDI3M:
 		ch_k_cntxt_0.chtype_protocol_msb = 1;
 		break;
 	default:
@@ -2958,8 +2987,7 @@ int gsi_alloc_channel(struct gsi_chan_props *props, unsigned long dev_hdl,
 			atomic_inc(&ctx->evtr->chan_ref_cnt);
 			if (ctx->evtr->props.exclusive) {
 				if (atomic_read(&ctx->evtr->chan_ref_cnt) == 1)
-					ctx->evtr->chan
-					[ctx->evtr->num_of_chan_allocated++] = ctx;
+					ctx->evtr->chan[ctx->evtr->num_of_chan_allocated++] = ctx;
 			}
 			else {
 				ctx->evtr->chan[ctx->evtr->num_of_chan_allocated++]
@@ -2983,6 +3011,8 @@ int gsi_alloc_channel(struct gsi_chan_props *props, unsigned long dev_hdl,
 	if (props->prot == GSI_CHAN_PROT_GCI) {
 		gsi_ctx->coal_info.ch_id = props->ch_id;
 		gsi_ctx->coal_info.evchid = props->evt_ring_hdl;
+		GSIDBG("GSI coal ch = %d, ev id %d\n",
+			props->ch_id, props->evt_ring_hdl);
 	}
 
 	return GSI_STATUS_SUCCESS;
@@ -4380,7 +4410,7 @@ int gsi_poll_n_channel(unsigned long chan_hdl,
 		/* update rp to see of we have anything new to process */
 		rp = ctx->evtr->props.gsi_read_event_ring_rp(
 			&ctx->evtr->props, ctx->evtr->id, ee);
-		rp |= ctx->ring.rp & GSI_MSB_MASK;
+		rp |= ctx->evtr->ring.rp & GSI_MSB_MASK;
 
 		ctx->evtr->ring.rp = rp;
 		/* read gsi event ring rp again if last read is empty */
@@ -4399,7 +4429,7 @@ int gsi_poll_n_channel(unsigned long chan_hdl,
 			__iowmb();
 			rp = ctx->evtr->props.gsi_read_event_ring_rp(
 				&ctx->evtr->props, ctx->evtr->id, ee);
-			rp |= ctx->ring.rp & GSI_MSB_MASK;
+			rp |= ctx->evtr->ring.rp & GSI_MSB_MASK;
 			ctx->evtr->ring.rp = rp;
 			if (rp == ctx->evtr->ring.rp_local) {
 				spin_unlock_irqrestore(
@@ -4459,17 +4489,19 @@ int gsi_config_channel_mode(unsigned long chan_hdl, enum gsi_chan_mode mode)
 		return -GSI_STATUS_UNSUPPORTED_OP;
 	}
 
+	spin_lock_irqsave(&gsi_ctx->slock, flags);
+
 	if (atomic_read(&ctx->poll_mode))
 		curr = GSI_CHAN_MODE_POLL;
 	else
 		curr = GSI_CHAN_MODE_CALLBACK;
 
 	if (mode == curr) {
-		GSIDBG("already in requested mode %u chan_hdl=%lu\n",
+		GSIERR("already in requested mode %u chan_hdl=%lu\n",
 				curr, chan_hdl);
+		spin_unlock_irqrestore(&gsi_ctx->slock, flags);
 		return -GSI_STATUS_UNSUPPORTED_OP;
 	}
-	spin_lock_irqsave(&gsi_ctx->slock, flags);
 	if (curr == GSI_CHAN_MODE_CALLBACK &&
 			mode == GSI_CHAN_MODE_POLL) {
 		if (gsi_ctx->per.ver >= GSI_VER_3_0) {
@@ -5803,6 +5835,25 @@ int gsi_get_fw_version(struct gsi_fw_version *ver)
 	return 0;
 }
 
+#if IS_ENABLED(CONFIG_QCOM_VA_MINIDUMP)
+static int qcom_va_md_gsi_notif_handler(struct notifier_block *this,
+				unsigned long event, void *ptr)
+{
+	struct va_md_entry entry;
+
+	strlcpy(entry.owner, "gsi_mini", sizeof(entry.owner));
+	entry.vaddr = (unsigned long)gsi_ctx;
+	entry.size = sizeof(struct gsi_ctx);
+	qcom_va_md_add_region(&entry);
+	return NOTIFY_OK;
+}
+
+static struct notifier_block qcom_va_md_gsi_notif_blk = {
+        .notifier_call = qcom_va_md_gsi_notif_handler,
+        .priority = INT_MAX,
+};
+#endif
+
 static int msm_gsi_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -5816,7 +5867,7 @@ static int msm_gsi_probe(struct platform_device *pdev)
 	}
 
 	gsi_ctx->ipc_logbuf = ipc_log_context_create(GSI_IPC_LOG_PAGES,
-		"gsi", 0);
+		"gsi", MINIDUMP_MASK);
 	if (gsi_ctx->ipc_logbuf == NULL)
 		GSIERR("failed to create IPC log, continue...\n");
 
@@ -5834,6 +5885,15 @@ static int msm_gsi_probe(struct platform_device *pdev)
 	gsi_ctx->dev = dev;
 	init_completion(&gsi_ctx->gen_ee_cmd_compl);
 	gsi_debugfs_init();
+
+#if IS_ENABLED(CONFIG_QCOM_VA_MINIDUMP)
+	result = qcom_va_md_register("gsi_mini", &qcom_va_md_gsi_notif_blk);
+
+	if(result)
+		GSIERR("gsi mini qcom_va_md_register failed = %d\n", result);
+	else
+		GSIDBG("gsi mini qcom_va_md_register success\n");
+#endif
 
 	return 0;
 }

@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2021, The Linux Foundation. All rights reserved.
+ *
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _IPA_LNX_STATS_I_H_
@@ -54,6 +56,9 @@
 
 #define SPEARHEAD_NUM_MAX_INSTANCES 2
 
+#define IPA_LNX_PIPE_PAGE_RECYCLING_INTERVAL_COUNT 5
+#define IPA_LNX_PIPE_PAGE_RECYCLING_INTERVAL_TIME 10 /* In milli second */
+
 /**
  * This is used to indicate which set of logs is enabled from IPA
  * These bitmapped macros are copied from
@@ -65,6 +70,7 @@
 #define SPRHD_IPA_LOG_TYPE_ETH_STATS       0x00008
 #define SPRHD_IPA_LOG_TYPE_USB_STATS       0x00010
 #define SPRHD_IPA_LOG_TYPE_MHIP_STATS      0x00020
+#define SPRHD_IPA_LOG_TYPE_RECYCLE_STATS   0x00040
 
 
 /**
@@ -338,7 +344,6 @@ struct ipa_lnx_mhip_inst_stats {
 };
 #define IPA_LNX_MHIP_INST_STATS_STRUCT_LEN_INT (8 + 248)
 
-
 struct ipa_lnx_consolidated_stats {
 	uint64_t log_type_mask;
 	struct ipa_lnx_generic_stats *generic_stats;
@@ -347,8 +352,42 @@ struct ipa_lnx_consolidated_stats {
 	struct ipa_lnx_eth_inst_stats *eth_stats;
 	struct ipa_lnx_usb_inst_stats *usb_stats;
 	struct ipa_lnx_mhip_inst_stats *mhip_stats;
+	struct ipa_lnx_pipe_page_recycling_stats *recycle_stats;
 };
 #define IPA_LNX_CONSOLIDATED_STATS_STRUCT_LEN_INT (8 + 48)
+
+enum rx_channel_type {
+	RX_WAN_COALESCING,
+	RX_WAN_DEFAULT,
+	RX_WAN_LOW_LAT_DATA,
+	RX_CHANNEL_MAX,
+};
+
+struct ipa_lnx_recycling_stats {
+	uint64_t total_cumulative;
+	uint64_t recycle_cumulative;
+	uint64_t temp_cumulative;
+	uint64_t total_diff;
+	uint64_t recycle_diff;
+	uint64_t temp_diff;
+	uint64_t valid;
+};
+
+/**
+ * The consolidated stats will be in the 0th index.
+ * Diff. between each interval values will be in
+ * indices 1 to (IPA_LNX_PIPE_PAGE_RECYCLING_INTERVAL_COUNT - 1)
+ * @new_set: Indicates if this is the new set of data or previous data.
+ * @interval_time_ms: Interval time in millisecond
+ */
+struct ipa_lnx_pipe_page_recycling_stats {
+	uint32_t interval_time_in_ms;
+	uint32_t default_coal_stats_index;
+	uint32_t low_lat_stats_index;
+	uint32_t sequence_id;
+	uint64_t reserved;
+	struct ipa_lnx_recycling_stats rx_channel[RX_CHANNEL_MAX][IPA_LNX_PIPE_PAGE_RECYCLING_INTERVAL_COUNT];
+};
 
 /* Explain below structures */
 struct ipa_lnx_each_inst_alloc_info {
@@ -370,7 +409,7 @@ struct ipa_lnx_stats_alloc_info {
 	uint32_t num_eth_instances;
 	uint32_t num_usb_instances;
 	uint32_t num_mhip_instances;
-	uint32_t reserved;
+	uint32_t num_page_rec_interval;
 	struct ipa_lnx_each_inst_alloc_info wlan_inst_info[SPEARHEAD_NUM_MAX_INSTANCES];
 	struct ipa_lnx_each_inst_alloc_info eth_inst_info[SPEARHEAD_NUM_MAX_INSTANCES];
 	struct ipa_lnx_each_inst_alloc_info usb_inst_info[SPEARHEAD_NUM_MAX_INSTANCES];
@@ -401,5 +440,228 @@ enum ipa_lnx_stats_ioc_cmd_type {
 };
 
 int ipa_spearhead_stats_init(void);
+
+/* Peripheral stats for Q6, should be in the same order, defined by Q6 */
+struct ipa_peripheral_mdm_stats {
+	uint32_t canary;
+
+	uint16_t num_entries;
+	uint16_t reserved;
+
+	/* TLV for number of peripherals connected to APROC */
+	/* value = IPA_PER_STATS_TYPE_NUM_PERS */
+	uint16_t periph_id;
+	uint16_t periph_len;
+	uint32_t periph_val;
+
+	/* TLV for number of periphers from/to traffic flowing from modem */
+	/* value = IPA_PER_STATS_TYPE_NUM_PERS_WWAN */
+	uint16_t periph_wwan_id;
+	uint16_t periph_wwan_len;
+	uint32_t periph_wwan_val;
+
+	/* TLV for bitmask for active/connected peripherals */
+	/* value = IPA_PER_STATS_TYPE_PER_TYPE */
+	uint16_t periph_type_id;
+	uint16_t periph_type_len;
+	uint32_t periph_type_val;
+
+	/* TLV for Current gen info if PCIe interconnect is valid */
+	/* value = IPA_PER_STATS_TYPE_PCIE_GEN */
+	uint16_t pcie_gen_type_id;
+	uint16_t pcie_gen_type_len;
+	uint32_t pcie_gen_type_val;
+
+	/* TLV for Current width info if PCIe interconnect is valid */
+	/* value = IPA_PER_STATS_TYPE_PCIE_WIDTH */
+	uint16_t pcie_width_type_id;
+	uint16_t pcie_width_type_len;
+	uint32_t pcie_width_type_val;
+
+	/* TLV for Max PCIe speed in current gen in Mbps */
+	/* value = IPA_PER_STATS_TYPE_PCIE_MAX_SPEED */
+	uint16_t pcie_max_speed_id;
+	uint16_t pcie_max_speed_len;
+	uint32_t pcie_max_speed_val;
+
+	/* TLV for number PCIe LPM transitions */
+	/* value = IPA_PER_STATS_TYPE_PCIE_NUM_LPM */
+	uint16_t pcie_num_lpm_trans_id;
+	uint16_t pcie_num_lpm_trans_len;
+	uint16_t pcie_num_lpm_trans_d3;
+	uint16_t pcie_num_lpm_trans_m1;
+	uint16_t pcie_num_lpm_trans_m2;
+	uint16_t pcie_num_lpm_trans_m0;
+
+	/* TLV for USB enumeration type */
+	/* value = IPA_PER_STATS_TYPE_USB_TYPE */
+	uint16_t usb_enum_id;
+	uint16_t usb_enum_len;
+	uint32_t usb_enum_value;
+
+	/* TLV for Current USB protocol enumeration if active */
+	/* value = IPA_PER_STATS_TYPE_USB_PROT */
+	uint16_t usb_prot_enum_id;
+	uint16_t usb_prot_enum_len;
+	uint32_t usb_prot_enum_value;
+
+	/* TLV for Max USB speed in current gen in Mbps */
+	/* value = IPA_PER_STATS_TYPE_USB_MAX_SPEED */
+	uint16_t usb_max_speed_id;
+	uint16_t usb_max_speed_len;
+	uint32_t usb_max_speed_val;
+
+	/* TLV for Total number of USB plug in/outs */
+	/* value = IPA_PER_STATS_TYPE_USB_PIPO */
+	uint16_t usb_pipo_id;
+	uint16_t usb_pipo_len;
+	uint32_t usb_pipo_val;
+
+	/* TLV for Wifi enumeration type*/
+	/* value = IPA_PER_STATS_TYPE_WIFI_ENUM_TYPE */
+	uint16_t wifi_enum_type_id;
+	uint16_t wifi_enum_type_len;
+	uint32_t wifi_enum_type_val;
+
+	/* TLV for Theoritical Max WLAN speed in current gen in Mbps (pipe for 5GHz in case of dual band) */
+	/* value = IPA_PER_STATS_TYPE_WIFI_MAX_SPEED */
+	uint16_t wifi_max_speed_id;
+	uint16_t wifi_max_speed_len;
+	uint32_t wifi_max_speed_val;
+
+	/* TLV for Theoretical Max WLAN speed on the 2.4GHz pipe, value of 0 means disabled */
+	/* value = IPA_PER_STATS_TYPE_WIFI_DUAL_BAND_EN */
+	uint16_t wifi_dual_band_enabled_id;
+	uint16_t wifi_dual_band_enabled_len;
+	uint32_t wifi_dual_band_enabled_val;
+
+	/* TLV for the type of ethernet client - Realtek/AQC */
+	/* value = IPA_PER_STATS_TYPE_ETH_CLIENT */
+	uint16_t eth_client_id;
+	uint16_t eth_client_len;
+	uint32_t eth_client_val;
+
+	/* TLV for Max Eth link speed */
+	/* value = IPA_PER_STATS_TYPE_ETH_MAX_SPEED */
+	uint16_t eth_max_speed_id;
+	uint16_t eth_max_speed_len;
+	uint32_t eth_max_speed_val;
+
+	/* TLV for Total number of bytes txferred through IPA DMA channels over PCIe */
+	/* For cases where GSI used for QDSS direct DMA, need to extract bytes stats from GSI FW */
+	/* value = IPA_PER_STATS_TYPE_IPA_DMA_BYTES */
+	uint16_t ipa_dma_bytes_id;
+	uint16_t ipa_dma_bytes_len;
+	uint32_t ipa_dma_bytes_val;
+
+	/* TLV for number of wifi peripherals connected to APROC */
+	/* value = IPA_PER_STATS_TYPE_WIFI_HOLB_UC */
+	uint16_t wifi_holb_uc_stats_id;
+	uint16_t wifi_holb_uc_stats_len;
+	uint16_t wifi_holb_uc_stats_num_periph_bad;
+	uint16_t wifi_holb_uc_stats_num_periph_recovered;
+
+	/* TLV for number of eth peripherals connected to APROC */
+	/* value = IPA_PER_STATS_TYPE_ETH_HOLB_UC */
+	uint16_t eth_holb_uc_stats_id;
+	uint16_t eth_holb_uc_stats_len;
+	uint16_t eth_holb_uc_stats_num_periph_bad;
+	uint16_t eth_holb_uc_stats_num_periph_recovered;
+
+	/* TLV for number of usb peripherals connected to APROC */
+	/* value = IPA_PER_STATS_TYPE_USB_HOLB_UC */
+	uint16_t usb_holb_uc_stats_id;
+	uint16_t usb_holb_uc_stats_len;
+	uint16_t usb_holb_uc_stats_num_periph_bad;
+	uint16_t usb_holb_uc_stats_num_periph_recovered;
+};
+
+struct ipa_peripheral_msm_stats {
+	uint32_t canary;
+
+	uint16_t num_entries;
+	uint16_t reserved;
+
+	/* TLV for number of peripherals connected to APROC */
+	/* value = IPA_PER_STATS_TYPE_NUM_PERS */
+	uint16_t periph_id;
+	uint16_t periph_len;
+	uint32_t periph_val;
+
+	/* TLV for number of periphers from/to traffic flowing from modem */
+	/* value = IPA_PER_STATS_TYPE_NUM_PERS_WWAN */
+	uint16_t periph_wwan_id;
+	uint16_t periph_wwan_len;
+	uint32_t periph_wwan_val;
+
+	/* TLV for bitmask for active/connected peripherals */
+	/* value = IPA_PER_STATS_TYPE_PER_TYPE */
+	uint16_t periph_type_id;
+	uint16_t periph_type_len;
+	uint32_t periph_type_val;
+
+	/* TLV for USB enumeration type */
+	/* value = IPA_PER_STATS_TYPE_USB_TYPE */
+	uint16_t usb_enum_id;
+	uint16_t usb_enum_len;
+	uint32_t usb_enum_value;
+
+	/* TLV for Current USB protocol enumeration if active */
+	/* value = IPA_PER_STATS_TYPE_USB_PROT */
+	uint16_t usb_prot_enum_id;
+	uint16_t usb_prot_enum_len;
+	uint32_t usb_prot_enum_value;
+
+	/* TLV for Max USB speed in current gen in Mbps */
+	/* value = IPA_PER_STATS_TYPE_USB_MAX_SPEED */
+	uint16_t usb_max_speed_id;
+	uint16_t usb_max_speed_len;
+	uint32_t usb_max_speed_val;
+
+	/* TLV for Total number of USB plug in/outs */
+	/* value = IPA_PER_STATS_TYPE_USB_PIPO */
+	uint16_t usb_pipo_id;
+	uint16_t usb_pipo_len;
+	uint32_t usb_pipo_val;
+
+	/* TLV for Wifi enumeration type*/
+	/* value = IPA_PER_STATS_TYPE_WIFI_ENUM_TYPE */
+	uint16_t wifi_enum_type_id;
+	uint16_t wifi_enum_type_len;
+	uint32_t wifi_enum_type_val;
+
+	/* TLV for Theoritical Max WLAN speed in current gen in Mbps (pipe for 5GHz in case of dual band) */
+	/* value = IPA_PER_STATS_TYPE_WIFI_MAX_SPEED */
+	uint16_t wifi_max_speed_id;
+	uint16_t wifi_max_speed_len;
+	uint32_t wifi_max_speed_val;
+
+	/* TLV for Theoretical Max WLAN speed on the 2.4GHz pipe, value of 0 means disabled */
+	/* value = IPA_PER_STATS_TYPE_WIFI_DUAL_BAND_EN */
+	uint16_t wifi_dual_band_enabled_id;
+	uint16_t wifi_dual_band_enabled_len;
+	uint32_t wifi_dual_band_enabled_val;
+
+	/* TLV for number of wifi peripherals connected to APROC */
+	/* value = IPA_PER_STATS_TYPE_WIFI_HOLB_UC */
+	uint16_t wifi_holb_uc_stats_id;
+	uint16_t wifi_holb_uc_stats_len;
+	uint16_t wifi_holb_uc_stats_num_periph_bad;
+	uint16_t wifi_holb_uc_stats_num_periph_recovered;
+
+	/* TLV for number of usb peripherals connected to APROC */
+	/* value = IPA_PER_STATS_TYPE_USB_HOLB_UC */
+	uint16_t usb_holb_uc_stats_id;
+	uint16_t usb_holb_uc_stats_len;
+	uint16_t usb_holb_uc_stats_num_periph_bad;
+	uint16_t usb_holb_uc_stats_num_periph_recovered;
+};
+
+union ipa_peripheral_stats {
+	struct ipa_peripheral_mdm_stats mdm;
+	struct ipa_peripheral_msm_stats msm;
+};
+
+int ipa3_peripheral_stats_init(union ipa_peripheral_stats *smem_addr);
 
 #endif // _UAPI_IPA_LNX_STATS_H_

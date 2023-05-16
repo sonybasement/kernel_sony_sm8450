@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _IPAHAL_H_
@@ -409,6 +410,17 @@ struct ipahal_imm_cmd_pyld {
 };
 
 
+/*
+ * struct ipahal_reg_read_imm_cmd_pyld - Reg read immediate command pyld
+ * @cmd: dummy register read memory
+ * @cmd_pyld: payload pointer to register read imm cmd
+ */
+struct ipahal_reg_read_imm_cmd_pyld {
+	struct ipa_mem_buffer cmd;
+	struct ipahal_imm_cmd_pyld *cmd_pyld;
+};
+
+
 /* Immediate command Function APIs */
 
 /*
@@ -522,6 +534,8 @@ enum ipahal_pkt_status_exception {
 	IPAHAL_PKT_STATUS_EXCEPTION_NAT,
 	IPAHAL_PKT_STATUS_EXCEPTION_IPV6CT,
 	IPAHAL_PKT_STATUS_EXCEPTION_UCP,
+	IPAHAL_PKT_STATUS_EXCEPTION_INVALID_PIPE,
+	IPAHAL_PKT_STATUS_EXCEPTION_HDRI,
 	IPAHAL_PKT_STATUS_EXCEPTION_CSUM,
 	IPAHAL_PKT_STATUS_EXCEPTION_MAX,
 };

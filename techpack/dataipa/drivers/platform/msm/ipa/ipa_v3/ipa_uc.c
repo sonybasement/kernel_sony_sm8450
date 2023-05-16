@@ -1224,6 +1224,16 @@ void ipa3_uc_load_notify(void)
 }
 EXPORT_SYMBOL(ipa3_uc_load_notify);
 
+void ipa3_uc_interface_destroy(void)
+{
+	if(ipa3_ctx->uc_ctx.uc_inited) {
+		ipa3_remove_interrupt_handler(IPA_UC_IRQ_2);
+		ipa3_remove_interrupt_handler(IPA_UC_IRQ_1);
+		ipa3_remove_interrupt_handler(IPA_UC_IRQ_0);
+		iounmap(ipa3_ctx->uc_ctx.uc_sram_mmio);
+		ipa3_ctx->uc_ctx.uc_inited = false;
+	}
+}
 
 /**
  * ipa3_uc_send_cmd() - Send a command to the uC
@@ -1993,9 +2003,15 @@ int ipa3_add_dscp_vlan_pcp_map(
 		return -EINVAL;
 	}
 
-	IPADBG("map add attempt. num_vlan: %u\n", map->num_vlan);
-
 	mem.size = sizeof(struct IpaDscpVlanPcpMap_t);
+
+#ifdef IPA_FLT_EXT_MPLS_GRE_GENERAL
+	IPADBG(
+		"Attempting to send map (num_vlan=%u num_s_vlan=%u) of size %u to uC.\n",
+		map->num_vlan,
+		map->num_s_vlan,
+		mem.size);
+#endif
 
 	mem.base = dma_alloc_coherent(
 		ipa3_ctx->uc_pdev, mem.size,

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
+ *
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/clk.h>
@@ -39,6 +41,7 @@
 #include <linux/soc/qcom/mdt_loader.h>
 #include "gsi.h"
 #include "ipa_stats.h"
+#include <linux/suspend.h>
 
 #ifdef CONFIG_ARM64
 
@@ -131,6 +134,11 @@ static int ipa3_alloc_pkt_init(void);
 static int ipa_alloc_pkt_init_ex(void);
 static void ipa3_free_pkt_init(void);
 static void ipa3_free_pkt_init_ex(void);
+
+#ifdef CONFIG_DEEPSLEEP
+static void ipa3_deepsleep_resume(void);
+static void ipa3_deepsleep_suspend(void);
+#endif
 
 static void ipa3_load_ipa_fw(struct work_struct *work);
 static DECLARE_WORK(ipa3_fw_loading_work, ipa3_load_ipa_fw);
@@ -476,6 +484,38 @@ int ipa_smmu_free_sgt(struct sg_table **out_sgt_ptr)
 }
 EXPORT_SYMBOL(ipa_smmu_free_sgt);
 
+/**
+ * ipa_pm_notify() - PM notify to listen suspend events
+ *
+ * This callback will be invoked by the pm framework to suspend
+ * operation is invoked.
+ *
+ * Returns NOTIFY_DONE to pm framework completed operation.
+ */
+
+static int ipa_pm_notify(struct notifier_block *b, unsigned long event, void *p)
+{
+	IPAERR("Entry\n");
+	switch (event) {
+		case PM_POST_SUSPEND:
+#ifdef CONFIG_DEEPSLEEP
+			if (mem_sleep_current == PM_SUSPEND_MEM && ipa3_ctx->deepsleep) {
+				IPADBG("Enter deepsleep resume\n");
+				ipa3_deepsleep_resume();
+				IPADBG("Exit deepsleep resume\n");
+			}
+#endif
+			break;
+	}
+	IPAERR("Exit\n");
+	return NOTIFY_DONE;
+}
+
+
+static struct notifier_block ipa_pm_notifier = {
+	.notifier_call = ipa_pm_notify,
+};
+
 static const struct dev_pm_ops ipa_pm_ops = {
 	.suspend_late = ipa3_ap_suspend,
 	.resume_early = ipa3_ap_resume,
@@ -761,10 +801,21 @@ struct iommu_domain *ipa3_get_eth1_smmu_domain(void)
 	return ipa3_get_smmu_domain_by_type(IPA_SMMU_CB_ETH1);
 }
 
-
 struct iommu_domain *ipa3_get_11ad_smmu_domain(void)
 {
 	return ipa3_get_smmu_domain_by_type(IPA_SMMU_CB_11AD);
+}
+
+struct device *ipa3_get_wlan_device(void)
+{
+	if (ipa3_ctx->ipa_hw_type == IPA_HW_v4_5 &&
+		ipa_get_wdi_version() == IPA_WDI_1) {
+		if (smmu_cb[IPA_SMMU_CB_WLAN].valid)
+			return smmu_cb[IPA_SMMU_CB_WLAN].dev;
+		IPAERR("CB not valid\n");
+		return NULL;
+	}
+	return ipa3_ctx->pdev;
 }
 
 struct device *ipa3_get_dma_dev(void)
@@ -772,6 +823,7 @@ struct device *ipa3_get_dma_dev(void)
 	return ipa3_ctx->pdev;
 }
 EXPORT_SYMBOL(ipa3_get_dma_dev);
+
 
 /**
  * ipa3_get_smmu_ctx()- Return smmu context for the given cb_type
@@ -782,6 +834,7 @@ struct ipa_smmu_cb_ctx *ipa3_get_smmu_ctx(enum ipa_smmu_cb_type cb_type)
 {
 	return &smmu_cb[cb_type];
 }
+EXPORT_SYMBOL(ipa3_get_smmu_ctx);
 
 static int ipa3_open(struct inode *inode, struct file *filp)
 {
@@ -1062,67 +1115,76 @@ static void ipa3_get_usb_ep_info(
 		)
 {
 	int ep_index = -1, i;
+	int pair_id = 0;
 
-	ep_info->num_ep_pairs = 0;
 	for (i = 0; i < ep_info->max_ep_pairs; i++) {
 		pair_info[i].consumer_pipe_num = -1;
 		pair_info[i].producer_pipe_num = -1;
 		pair_info[i].ep_id = -1;
 	}
 
-	ep_index = ipa3_get_ep_mapping(IPA_CLIENT_USB2_PROD);
+	if ((!ep_info->teth_prot_valid) || (ep_info->teth_prot_valid &&
+		ep_info->teth_prot == IPA_PROT_RMNET_CV2X)) {
+		ep_index = ipa3_get_ep_mapping(IPA_CLIENT_USB2_PROD);
 
-	if ((ep_index != -1) && ipa3_ctx->ep[ep_index].valid) {
-		pair_info[ep_info->num_ep_pairs].consumer_pipe_num = ep_index;
-		ep_index = ipa3_get_ep_mapping(IPA_CLIENT_USB2_CONS);
-		if ((ep_index != -1) && (ipa3_ctx->ep[ep_index].valid)) {
-			pair_info[ep_info->num_ep_pairs].producer_pipe_num =
-				ep_index;
-			pair_info[ep_info->num_ep_pairs].ep_id =
-				IPA_v4_USB1_EP_ID;
+		if ((ep_index != -1) && ipa3_ctx->ep[ep_index].valid) {
+			pair_info[pair_id].consumer_pipe_num = ep_index;
+			ep_index = ipa3_get_ep_mapping(IPA_CLIENT_USB2_CONS);
 
-			IPADBG("ep_pair_info consumer_pipe_num %d",
-			pair_info[ep_info->num_ep_pairs].consumer_pipe_num);
-			IPADBG(" producer_pipe_num %d ep_id %d\n",
-			pair_info[ep_info->num_ep_pairs].producer_pipe_num,
-				pair_info[ep_info->num_ep_pairs].ep_id);
-			ep_info->num_ep_pairs++;
-		} else {
-			pair_info[ep_info->num_ep_pairs].consumer_pipe_num = -1;
-			IPADBG("ep_pair_info consumer_pipe_num %d",
-			pair_info[ep_info->num_ep_pairs].consumer_pipe_num);
-			IPADBG(" producer_pipe_num %d ep_id %d\n",
-			pair_info[ep_info->num_ep_pairs].producer_pipe_num,
-				pair_info[ep_info->num_ep_pairs].ep_id);
+			if ((ep_index != -1) &&
+				(ipa3_ctx->ep[ep_index].valid)) {
+				pair_info[pair_id].producer_pipe_num = ep_index;
+				pair_info[pair_id].ep_id = IPA_USB1_EP_ID;
+
+				IPADBG("ep_pair_info consumer_pipe_num %d",
+					pair_info[pair_id].consumer_pipe_num);
+				IPADBG(" producer_pipe_num %d ep_id %d\n",
+					pair_info[pair_id].producer_pipe_num,
+					pair_info[pair_id].ep_id);
+				pair_id++;
+			} else {
+				pair_info[pair_id].consumer_pipe_num = -1;
+				IPADBG("ep_pair_info consumer_pipe_num %d",
+					pair_info[pair_id].consumer_pipe_num);
+				IPADBG(" producer_pipe_num %d ep_id %d\n",
+					pair_info[pair_id].producer_pipe_num,
+					pair_info[pair_id].ep_id);
+			}
 		}
 	}
 
-	ep_index = ipa3_get_ep_mapping(IPA_CLIENT_USB_PROD);
 
-	if ((ep_index != -1) && ipa3_ctx->ep[ep_index].valid) {
-		pair_info[ep_info->num_ep_pairs].consumer_pipe_num = ep_index;
-		ep_index = ipa3_get_ep_mapping(IPA_CLIENT_USB_CONS);
-		if ((ep_index != -1) && (ipa3_ctx->ep[ep_index].valid)) {
-			pair_info[ep_info->num_ep_pairs].producer_pipe_num =
-				ep_index;
-			pair_info[ep_info->num_ep_pairs].ep_id =
-				IPA_v4_USB0_EP_ID;
+	if ((!ep_info->teth_prot_valid) || (ep_info->teth_prot_valid &&
+		ep_info->teth_prot == IPA_PROT_RMNET)) {
+		ep_index = ipa3_get_ep_mapping(IPA_CLIENT_USB_PROD);
 
-			IPADBG("ep_pair_info consumer_pipe_num %d",
-			pair_info[ep_info->num_ep_pairs].consumer_pipe_num);
-			IPADBG(" producer_pipe_num %d ep_id %d\n",
-			pair_info[ep_info->num_ep_pairs].producer_pipe_num,
-				pair_info[ep_info->num_ep_pairs].ep_id);
-			ep_info->num_ep_pairs++;
-		} else {
-			pair_info[ep_info->num_ep_pairs].consumer_pipe_num = -1;
-			IPADBG("ep_pair_info consumer_pipe_num %d",
-			pair_info[ep_info->num_ep_pairs].consumer_pipe_num);
-			IPADBG(" producer_pipe_num %d ep_id %d\n",
-			pair_info[ep_info->num_ep_pairs].producer_pipe_num,
-				pair_info[ep_info->num_ep_pairs].ep_id);
+		if ((ep_index != -1) && ipa3_ctx->ep[ep_index].valid) {
+			pair_info[pair_id].consumer_pipe_num = ep_index;
+			ep_index = ipa3_get_ep_mapping(IPA_CLIENT_USB_CONS);
+
+			if ((ep_index != -1) &&
+				(ipa3_ctx->ep[ep_index].valid)) {
+				pair_info[pair_id].producer_pipe_num = ep_index;
+				pair_info[pair_id].ep_id = IPA_USB0_EP_ID;
+
+				IPADBG("ep_pair_info consumer_pipe_num %d",
+					pair_info[pair_id].consumer_pipe_num);
+				IPADBG(" producer_pipe_num %d ep_id %d\n",
+					pair_info[pair_id].producer_pipe_num,
+					pair_info[pair_id].ep_id);
+				pair_id++;
+			} else {
+				pair_info[pair_id].consumer_pipe_num = -1;
+				IPADBG("ep_pair_info consumer_pipe_num %d",
+					pair_info[pair_id].consumer_pipe_num);
+				IPADBG(" producer_pipe_num %d ep_id %d\n",
+					pair_info[pair_id].producer_pipe_num,
+					pair_info[pair_id].ep_id);
+			}
 		}
 	}
+	ep_info->num_ep_pairs = pair_id;
+
 }
 
 static void ipa3_get_pcie_ep_info(
@@ -2614,6 +2676,47 @@ done:
 	return res;
 }
 
+/**
+ * ipa3_send_ext_router_info() - Pass ext_router_info to the IPACM
+ * @info: pointer to the ext router info
+ *
+ * Returns: 0 on success, negative on failure
+ */
+int ipa3_send_ext_router_info(struct ipa_ioc_ext_router_info *info)
+{
+	struct ipa_msg_meta msg_meta;
+	int res = 0;
+
+	if (!info) {
+		IPAERR("Bad arg: info is NULL\n");
+		res = -EIO;
+		goto done;
+	}
+
+	/*
+	 * Prep and send msg to ipacm
+	 */
+	memset(&msg_meta, 0, sizeof(struct ipa_msg_meta));
+	msg_meta.msg_type = IPA_SET_EXT_ROUTER_MODE_EVENT;
+	msg_meta.msg_len  = sizeof(struct ipa_ioc_ext_router_info);
+
+	IPADBG("Setting IPA to Ext Router mode %d\n", info->mode);
+
+	/*
+	 * Post event to ipacm
+	 */
+	res = ipa3_send_msg(&msg_meta, info, ipa3_general_free_cb);
+
+	if (res) {
+		IPAERR_RL("ipa3_send_msg failed: %d\n", res);
+		kfree(info);
+		goto done;
+	}
+
+done:
+	return res;
+}
+
 static long ipa3_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	int retval = 0;
@@ -2634,6 +2737,7 @@ static long ipa3_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	struct ipa_ioc_eogre_info eogre_info;
 	struct ipa_ioc_macsec_info macsec_info;
 	struct ipa_macsec_map *macsec_map;
+	struct ipa_ioc_ext_router_info *ext_router_info;
 	bool send2uC, send2ipacm;
 	size_t sz;
 	int pre_entry;
@@ -3715,9 +3819,9 @@ static long ipa3_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		/*Route and filter rules will also be clean*/
 		IPADBG("Got IPA_IOC_CLEANUP\n");
 		retval = ipa3_reset_hdr(true);
-		memset(&nat_del, 0, sizeof(nat_del));
-		nat_del.table_index = 0;
-		retval = ipa3_nat_del_cmd(&nat_del);
+		IPA_ACTIVE_CLIENTS_INC_SPECIAL("SRAM");
+		retval = ipa3_nat_cleanup_cmd();
+		IPA_ACTIVE_CLIENTS_DEC_SPECIAL("SRAM");
 		if (ipa3_ctx->platform_type == IPA_PLAT_TYPE_APQ)
 			retval = ipa3_clean_mhip_dl_rule();
 		else
@@ -3728,6 +3832,11 @@ static long ipa3_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	case IPA_IOC_QUERY_WLAN_CLIENT:
 		IPADBG("Got IPA_IOC_QUERY_WLAN_CLIENT\n");
 		retval = ipa3_resend_wlan_msg();
+		break;
+
+	case IPA_IOC_QUERY_CACHED_DRIVER_MSG:
+		IPADBG("Got IPA_IOC_QUERY_CACHED_DRIVER_MSG\n");
+		retval = ipa3_resend_driver_msg();
 		break;
 
 	case IPA_IOC_GSB_CONNECT:
@@ -3958,6 +4067,12 @@ static long ipa3_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		}
 
 		retval = ipa3_check_eogre(&eogre_info, &send2uC, &send2ipacm);
+		if (retval == -EIO)
+		{
+			IPADBG("no work needs to be done but return success to caller");
+			retval = 0;
+			break;
+		}
 
 		ipa3_ctx->eogre_enabled = (retval == 0);
 
@@ -3988,6 +4103,12 @@ static long ipa3_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		memset(&eogre_info, 0, sizeof(eogre_info));
 
 		retval = ipa3_check_eogre(&eogre_info, &send2uC, &send2ipacm);
+		if (retval == -EIO)
+		{
+			IPADBG("no work needs to be done but return success to caller");
+			retval = 0;
+			break;
+		}
 
 		if (retval == 0 && send2uC == true) {
 			/*
@@ -4055,6 +4176,30 @@ static long ipa3_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			(cmd == IPA_IOC_ADD_MACSEC_MAPPING) ?
 			IPA_MACSEC_ADD_EVENT : IPA_MACSEC_DEL_EVENT,
 			macsec_map);
+		break;
+
+	case IPA_IOC_SET_EXT_ROUTER_MODE:
+		IPADBG("Got IPA_IOC_SET_EXT_ROUTER_MODE\n");
+
+		ext_router_info = kzalloc(sizeof(struct ipa_ioc_ext_router_info), GFP_KERNEL);
+		if (!ext_router_info) {
+			IPAERR("ext_router_info memory allocation failed !\n");
+			retval = -ENOMEM;
+			break;
+		}
+
+		if (copy_from_user(ext_router_info, (const void __user *) arg,
+				sizeof(struct ipa_ioc_ext_router_info))) {
+			IPAERR_RL("copy_from_user fails\n");
+			retval = -EFAULT;
+			kfree(ext_router_info);
+			break;
+		}
+
+		if (ipa3_send_ext_router_info(ext_router_info)) {
+			IPAERR("failed to send ext_router_info!\n");
+			retval = -EFAULT;
+		}
 		break;
 
 	default:
@@ -4665,20 +4810,20 @@ static int ipa3_q6_clean_q6_rt_tbls(enum ipa_ip_type ip,
 		modem_rt_index_hi = IPA_MEM_PART(v4_modem_rt_index_hi);
 		if (rlt == IPA_RULE_HASHABLE) {
 			lcl_addr_mem_part = IPA_MEM_PART(v4_rt_hash_ofst);
-			lcl_hdr_sz =  IPA_MEM_PART(v4_flt_hash_size);
+			lcl_hdr_sz =  IPA_MEM_PART(v4_rt_hash_size);
 		} else {
 			lcl_addr_mem_part = IPA_MEM_PART(v4_rt_nhash_ofst);
-			lcl_hdr_sz = IPA_MEM_PART(v4_flt_nhash_size);
+			lcl_hdr_sz = IPA_MEM_PART(v4_rt_nhash_size);
 		}
 	} else {
 		modem_rt_index_lo = IPA_MEM_PART(v6_modem_rt_index_lo);
 		modem_rt_index_hi = IPA_MEM_PART(v6_modem_rt_index_hi);
 		if (rlt == IPA_RULE_HASHABLE) {
 			lcl_addr_mem_part = IPA_MEM_PART(v6_rt_hash_ofst);
-			lcl_hdr_sz =  IPA_MEM_PART(v6_flt_hash_size);
+			lcl_hdr_sz =  IPA_MEM_PART(v6_rt_hash_size);
 		} else {
 			lcl_addr_mem_part = IPA_MEM_PART(v6_rt_nhash_ofst);
-			lcl_hdr_sz = IPA_MEM_PART(v6_flt_nhash_size);
+			lcl_hdr_sz = IPA_MEM_PART(v6_rt_nhash_size);
 		}
 	}
 
@@ -4686,7 +4831,7 @@ static int ipa3_q6_clean_q6_rt_tbls(enum ipa_ip_type ip,
 		modem_rt_index_hi - modem_rt_index_lo + 1,
 		lcl_hdr_sz, lcl_hdr_sz, &mem, true);
 	if (retval) {
-		IPAERR("fail generate empty rt img\n");
+		IPAERR("fail generate empty rt img, size %d\n", lcl_hdr_sz);
 		return -ENOMEM;
 	}
 
@@ -5980,6 +6125,7 @@ static void ipa3_teardown_apps_pipes(void)
 	__ipa3_del_rt_rule(ipa3_ctx->dflt_v4_rt_rule_hdl);
 	__ipa3_del_hdr(ipa3_ctx->excp_hdr_hdl, false);
 	ipa3_teardown_sys_pipe(ipa3_ctx->clnt_hdl_cmd);
+	ipa3_dealloc_common_event_ring();
 }
 
 #ifdef CONFIG_COMPAT
@@ -6268,6 +6414,7 @@ void ipa3_enable_clks(void)
 
 	idx = ipa3_get_bus_vote();
 
+	IPADBG_CLK("IPA ICC Voting for BW Started\n");
 	for (i = 0; i < ipa3_ctx->icc_num_paths; i++) {
 		if (ipa3_ctx->ctrl->icc_path[i] &&
 			icc_set_bw(
@@ -6275,8 +6422,13 @@ void ipa3_enable_clks(void)
 			ipa3_ctx->icc_clk[idx][i][IPA_ICC_AB],
 			ipa3_ctx->icc_clk[idx][i][IPA_ICC_IB]))
 			WARN(1, "path %d bus scaling failed", i);
+			IPADBG_CLK("IPA ICC Voting for BW %d Path Completed\n", i);
 	}
+	IPADBG_CLK("IPA ICC Voting for BW Finished\n");
+
+	IPADBG_CLK("Enabling IPA Clocks Started\n");
 	ipa3_ctx->ctrl->ipa3_enable_clks();
+	IPADBG_CLK("Enabling IPA Clocks Finished\n");
 	atomic_set(&ipa3_ctx->ipa_clk_vote, 1);
 }
 
@@ -6309,7 +6461,13 @@ void ipa3_disable_clks(void)
 		return;
 	}
 
-	IPADBG("disabling IPA clocks and bus voting\n");
+	IPADBG("Disabling IPA clocks and bus voting\n");
+
+	if (atomic_read(&ipa3_ctx->ipa_clk_vote) == 0)
+	{
+		IPAERR("IPA clock already disabled\n");
+		return;
+	}
 
 	/*
 	 * We see a NoC error on GSI on this flag sequence.
@@ -6332,10 +6490,13 @@ void ipa3_disable_clks(void)
 		}
 	}
 
+	IPADBG_CLK("Disabling IPA Clocks Started\n");
 	ipa3_ctx->ctrl->ipa3_disable_clks();
+	IPADBG_CLK("Disabling IPA Clocks Finished\n");
 
 	ipa_pm_set_clock_index(0);
 
+	IPADBG_CLK("IPA ICC Voting for BW Started\n");
 	for (i = 0; i < ipa3_ctx->icc_num_paths; i++) {
 		if (ipa3_ctx->ctrl->icc_path[i] &&
 			icc_set_bw(
@@ -6343,7 +6504,9 @@ void ipa3_disable_clks(void)
 			ipa3_ctx->icc_clk[IPA_ICC_NONE][i][IPA_ICC_AB],
 			ipa3_ctx->icc_clk[IPA_ICC_NONE][i][IPA_ICC_IB]))
 			WARN(1, "path %d bus off failed", i);
+			IPADBG_CLK("IPA ICC Voting for BW %d Path Completed\n", i);
 	}
+	IPADBG_CLK("IPA ICC Voting for BW Finished\n");
 	atomic_set(&ipa3_ctx->ipa_clk_vote, 0);
 }
 
@@ -6644,8 +6807,13 @@ static void ipa_dec_clients_disable_clks_on_wq(struct work_struct *work)
 
 static void ipa_inc_clients_enable_clks_on_wq(struct work_struct *work)
 {
+	int type;
 	ipa3_enable_clks();
 	IPAERR("unexpected clk access, clock on IPA to save reg");
+	type = gsi_pending_irq_type();
+	if (type) {
+		IPAERR("unexpected gsi irq type: %d\n", type);
+        }
 	ipa_assert();
 }
 
@@ -6932,7 +7100,8 @@ void ipa3_suspend_handler(enum ipa_irq_type interrupt,
 			pipe_bitmask |= bmsk;
 		bmsk = bmsk << 1;
 
-		if ((i % IPA_EP_PER_REG) == (ep_per_reg - 1)) {
+		if ((i % IPA_EP_PER_REG) == (ep_per_reg - 1)
+			|| (i == ipa3_ctx->ipa_num_pipes - 1)) {
 			IPADBG("interrupt data: %u\n", suspend_data[j]);
 			res = ipa_pm_handle_suspend(pipe_bitmask, j);
 			if (res) {
@@ -7130,12 +7299,21 @@ static int ipa3_panic_notifier(struct notifier_block *this,
 	/* Make sure IPA clock voted when collecting the reg dump */
 	IPA_ACTIVE_CLIENTS_PREP_SPECIAL(log_info, "PANIC_VOTE");
 	res = ipa3_inc_client_enable_clks_no_block(&log_info);
-	if (res) {
+	if (!ipa3_active_clks_status()) {
 		IPAERR("IPA clk off not saving the IPA registers\n");
 	} else {
+		/*make sure clock won't disable in middle of save reg*/
+		if (res) {
+			IPADBG("IPA resume in progress increment clinet cnt\n");
+			atomic_inc(&ipa3_ctx->ipa3_active_clients.cnt);
+		}
 		ipa_save_registers();
 		ipahal_print_all_regs(false);
 		ipa_wigig_save_regs();
+		if (res) {
+			IPADBG("IPA resume in progress decrement clinet cnt\n");
+			atomic_dec(&ipa3_ctx->ipa3_active_clients.cnt);
+		}
 	}
 
 	ipa3_active_clients_log_print_table(active_clients_table_buf,
@@ -7201,6 +7379,9 @@ static enum gsi_ver ipa3_get_gsi_ver(enum ipa_hw_type ipa_hw_type)
 	case IPA_HW_v5_1:
 		gsi_ver = GSI_VER_3_0;
 		break;
+	case IPA_HW_v5_2:
+		gsi_ver = GSI_VER_5_2;
+		break;
 	default:
 		IPAERR("No GSI version for ipa type %d\n", ipa_hw_type);
 		WARN_ON(1);
@@ -7265,6 +7446,12 @@ static inline void ipa3_enable_napi_lan_rx(void)
 {
 	if (ipa3_ctx->lan_rx_napi_enable)
 		napi_enable(&ipa3_ctx->napi_lan_rx);
+}
+
+static inline void ipa3_disable_napi_lan_rx(void)
+{
+	if (ipa3_ctx->lan_rx_napi_enable)
+		napi_disable(&ipa3_ctx->napi_lan_rx);
 }
 
 static inline void ipa3_register_to_fmwk(void)
@@ -7418,6 +7605,9 @@ static int ipa3_post_init(const struct ipa3_plat_drv_res *resource_p,
 	struct idr *idr;
 	bool reg = false;
 	enum ipa_ip_type ip;
+#if IS_ENABLED(CONFIG_QCOM_VA_MINIDUMP)
+	struct ipa_minidump_data *mini_dump;
+#endif
 
 	if (ipa3_ctx == NULL) {
 		IPADBG("IPA driver haven't initialized\n");
@@ -7764,6 +7954,10 @@ static int ipa3_post_init(const struct ipa3_plat_drv_res *resource_p,
 	/* init uc-activation tbl*/
 	ipa3_setup_uc_act_tbl();
 
+#ifdef CONFIG_DEEPSLEEP
+	if (!ipa3_is_ready())
+		ipa_fmwk_deepsleep_exit_ipa();
+#endif
 	complete_all(&ipa3_ctx->init_completion_obj);
 
 	ipa_ut_module_init();
@@ -7778,7 +7972,16 @@ static int ipa3_post_init(const struct ipa3_plat_drv_res *resource_p,
 		IPADBG("Fail to init spearhead ipa lnx module");
 
 	pr_info("IPA driver initialization was successful.\n");
-
+#if IS_ENABLED(CONFIG_QCOM_VA_MINIDUMP)
+	/*Adding ipa3_ctx pointer to minidump list*/
+	mini_dump = (struct ipa_minidump_data *)kzalloc(sizeof(struct ipa_minidump_data), GFP_KERNEL);
+	if (mini_dump != NULL) {
+		strlcpy(mini_dump->data.owner, "ipa3_ctx", sizeof(mini_dump->data.owner));
+		mini_dump->data.vaddr = (unsigned long)(ipa3_ctx);
+		mini_dump->data.size = sizeof(struct ipa3_context);
+		list_add(&mini_dump->entry, &ipa3_ctx->minidump_list_head);
+	}
+#endif
 	return 0;
 
 fail_teth_bridge_driver_init:
@@ -7961,13 +8164,12 @@ static int ipa3_mdt_load_ipa_fws(const char *sub_sys)
 
 static int ipa3_pil_load_ipa_fws(const char *sub_sys)
 {
-	void *subsystem_get_retval = NULL;
 
 	IPADBG("PIL FW loading process initiated sub_sys=%s\n",
 		sub_sys);
 
-	subsystem_get_retval = subsystem_get(sub_sys);
-	if (IS_ERR_OR_NULL(subsystem_get_retval)) {
+	ipa3_ctx->subsystem_get_retval = subsystem_get(sub_sys);
+	if (IS_ERR_OR_NULL(ipa3_ctx->subsystem_get_retval)) {
 		IPAERR("Unable to PIL load FW for sub_sys=%s\n", sub_sys);
 		return -EINVAL;
 	}
@@ -7976,6 +8178,20 @@ static int ipa3_pil_load_ipa_fws(const char *sub_sys)
 	return 0;
 }
 #endif /* IS_ENABLED(CONFIG_QCOM_MDT_LOADER) */
+
+#ifdef CONFIG_DEEPSLEEP
+static int ipa3_pil_unload_ipa_fws(void)
+{
+
+	IPADBG("PIL FW unloading process initiated sub_sys\n");
+
+	if (ipa3_ctx->subsystem_get_retval)
+		subsystem_put(ipa3_ctx->subsystem_get_retval);
+
+	IPADBG("PIL FW unloading process is complete sub_sys\n");
+	return 0;
+}
+#endif
 
 static void ipa3_load_ipa_fw(struct work_struct *work)
 {
@@ -8163,10 +8379,15 @@ static ssize_t ipa3_write(struct file *file, const char __user *buf,
 	/* Check MHI configuration on MDM devices */
 	if (ipa3_ctx->platform_type == IPA_PLAT_TYPE_MDM) {
 
+		/* todo in future: change vlan_mode_iface from bool to enum
+		 * and support double vlan for all ifaces
+		 */
+		if (strnstr(dbg_buff, "double-vlan", strlen(dbg_buff)))
+			ipa3_ctx->is_eth_double_vlan_mode = true;
+
 		if (strnstr(dbg_buff, "vlan", strlen(dbg_buff))) {
 			if (strnstr(dbg_buff, STR_ETH_IFACE, strlen(dbg_buff)))
-				ipa3_ctx->vlan_mode_iface[IPA_VLAN_IF_EMAC] =
-				true;
+				ipa3_ctx->vlan_mode_iface[IPA_VLAN_IF_EMAC] = true;
 #if IPA_ETH_API_VER >= 2
 			/* In Dual NIC mode we get "vlan: eth [eth0|eth1] [eth0|eth1]?" while device name is
 			   "eth0" in legacy so, we set it to false to diffrentiate Dual NIC from legacy */
@@ -8180,11 +8401,9 @@ static ssize_t ipa3_write(struct file *file, const char __user *buf,
 			}
 #endif
 			if (strnstr(dbg_buff, STR_RNDIS_IFACE, strlen(dbg_buff)))
-				ipa3_ctx->vlan_mode_iface[IPA_VLAN_IF_RNDIS] =
-				true;
+				ipa3_ctx->vlan_mode_iface[IPA_VLAN_IF_RNDIS] = true;
 			if (strnstr(dbg_buff, STR_ECM_IFACE, strlen(dbg_buff)))
-				ipa3_ctx->vlan_mode_iface[IPA_VLAN_IF_ECM] =
-				true;
+				ipa3_ctx->vlan_mode_iface[IPA_VLAN_IF_ECM] = true;
 
 			/*
 			 * when vlan mode is passed to our dev we expect
@@ -8551,6 +8770,45 @@ static u32 get_tx_wrapper_cache_size(u32 cache_size)
 	return IPA_TX_WRAPPER_CACHE_MAX_THRESHOLD;
 }
 
+static u32 get_ipa_gen_rx_cmn_page_pool_size(u32 rx_cmn_page_pool_size)
+{
+        if (!rx_cmn_page_pool_size)
+                return IPA_GENERIC_RX_CMN_PAGE_POOL_SZ_FACTOR;
+        if (rx_cmn_page_pool_size <= IPA_GENERIC_RX_CMN_PAGE_POOL_SZ_FACTOR)
+                return rx_cmn_page_pool_size;
+        return IPA_GENERIC_RX_CMN_PAGE_POOL_SZ_FACTOR;
+}
+
+
+static u32 get_ipa_gen_rx_cmn_temp_pool_size(u32 rx_cmn_temp_pool_size)
+{
+        if (!rx_cmn_temp_pool_size)
+                return IPA_GENERIC_RX_CMN_TEMP_POOL_SZ_FACTOR;
+        if (rx_cmn_temp_pool_size <= IPA_GENERIC_RX_CMN_TEMP_POOL_SZ_FACTOR)
+                return rx_cmn_temp_pool_size;
+        return IPA_GENERIC_RX_CMN_TEMP_POOL_SZ_FACTOR;
+}
+
+#if IS_ENABLED(CONFIG_QCOM_VA_MINIDUMP)
+static int qcom_va_md_ipa_notif_handler(struct notifier_block *this,
+					unsigned long event, void *ptr)
+{
+	struct ipa_minidump_data *testptr;
+	struct ipa_minidump_data *ptr_next;
+
+	list_for_each_entry_safe(testptr, ptr_next, &ipa3_ctx->minidump_list_head, entry) {
+		qcom_va_md_add_region(&testptr->data);
+	}
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block qcom_va_md_ipa_notif_blk = {
+	.notifier_call = qcom_va_md_ipa_notif_handler,
+	.priority = INT_MAX,
+};
+#endif
+
 /**
  * ipa3_pre_init() - Initialize the IPA Driver.
  * This part contains all initialization which doesn't require IPA HW, such
@@ -8605,9 +8863,13 @@ static int ipa3_pre_init(const struct ipa3_plat_drv_res *resource_p,
 		ipa3_ctx->fw_load_data.state = IPA_FW_LOAD_STATE_INIT;
 	mutex_init(&ipa3_ctx->fw_load_data.lock);
 
-	ipa3_ctx->logbuf = ipc_log_context_create(IPA_IPC_LOG_PAGES, "ipa", 0);
+	ipa3_ctx->logbuf = ipc_log_context_create(IPA_IPC_LOG_PAGES, "ipa", MINIDUMP_MASK);
 	if (ipa3_ctx->logbuf == NULL)
 		IPADBG("failed to create IPC log, continue...\n");
+
+	ipa3_ctx->logbuf_clk = ipc_log_context_create(IPA_IPC_LOG_PAGES, "ipa_clk", MINIDUMP_MASK);
+	if (ipa3_ctx->logbuf_clk == NULL)
+		IPADBG("failed to create IPC ipa_clk log, continue...\n");
 
 	/* ipa3_ctx->pdev and ipa3_ctx->uc_pdev will be set in the smmu probes*/
 	ipa3_ctx->master_pdev = ipa_pdev;
@@ -8658,6 +8920,11 @@ static int ipa3_pre_init(const struct ipa3_plat_drv_res *resource_p,
 	ipa3_ctx->stats.page_recycle_stats[1].tmp_alloc = 0;
 	memset(ipa3_ctx->stats.page_recycle_cnt, 0,
 		sizeof(ipa3_ctx->stats.page_recycle_cnt));
+	ipa3_ctx->stats.num_sort_tasklet_sched[0] = 0;
+	ipa3_ctx->stats.num_sort_tasklet_sched[1] = 0;
+	ipa3_ctx->stats.num_sort_tasklet_sched[2] = 0;
+	ipa3_ctx->stats.num_of_times_wq_reschd = 0;
+	ipa3_ctx->stats.page_recycle_cnt_in_tasklet = 0;
 	ipa3_ctx->skip_uc_pipe_reset = resource_p->skip_uc_pipe_reset;
 	ipa3_ctx->tethered_flow_control = resource_p->tethered_flow_control;
 	ipa3_ctx->ee = resource_p->ee;
@@ -8687,6 +8954,10 @@ static int ipa3_pre_init(const struct ipa3_plat_drv_res *resource_p,
 	ipa3_ctx->rmnet_ll_enable = resource_p->rmnet_ll_enable;
 	ipa3_ctx->tx_wrapper_cache_max_size = get_tx_wrapper_cache_size(
 			resource_p->tx_wrapper_cache_max_size);
+	ipa3_ctx->ipa_gen_rx_cmn_page_pool_sz_factor = get_ipa_gen_rx_cmn_page_pool_size(
+                        resource_p->ipa_gen_rx_cmn_page_pool_sz_factor);
+        ipa3_ctx->ipa_gen_rx_cmn_temp_pool_sz_factor = get_ipa_gen_rx_cmn_temp_pool_size(
+                        resource_p->ipa_gen_rx_cmn_temp_pool_sz_factor);
 	ipa3_ctx->ipa_config_is_auto = resource_p->ipa_config_is_auto;
 	ipa3_ctx->ipa_mhi_proxy = resource_p->ipa_mhi_proxy;
 	ipa3_ctx->max_num_smmu_cb = resource_p->max_num_smmu_cb;
@@ -8710,6 +8981,7 @@ static int ipa3_pre_init(const struct ipa3_plat_drv_res *resource_p,
 	ipa3_ctx->uc_act_tbl_valid = false;
 	ipa3_ctx->uc_act_tbl_total = 0;
 	ipa3_ctx->uc_act_tbl_next_index = 0;
+	ipa3_ctx->is_dual_pine_config = resource_p->is_dual_pine_config;
 
 	if (resource_p->gsi_fw_file_name) {
 		ipa3_ctx->gsi_fw_file_name =
@@ -8869,6 +9141,10 @@ static int ipa3_pre_init(const struct ipa3_plat_drv_res *resource_p,
 	/* Initialize Page poll threshold. */
 	ipa3_ctx->page_poll_threshold = IPA_PAGE_POLL_DEFAULT_THRESHOLD;
 
+	/*Initialize number napi without prealloc buff*/
+	ipa3_ctx->ipa_max_napi_sort_page_thrshld = IPA_MAX_NAPI_SORT_PAGE_THRSHLD;
+	ipa3_ctx->page_wq_reschd_time = IPA_MAX_PAGE_WQ_RESCHED_TIME;
+
 	/* Use common page pool for Def/Coal pipe. */
 	if (ipa3_ctx->ipa_hw_type >= IPA_HW_v5_1)
 		ipa3_ctx->wan_common_page_pool = true;
@@ -8912,6 +9188,8 @@ static int ipa3_pre_init(const struct ipa3_plat_drv_res *resource_p,
 		}
 	}
 
+	INIT_LIST_HEAD(&ipa3_ctx->minidump_list_head);
+
 	/*
 	 * Setup access for register collection/dump on crash
 	 */
@@ -8931,13 +9209,19 @@ static int ipa3_pre_init(const struct ipa3_plat_drv_res *resource_p,
 	atomic_set(&ipa3_ctx->ipa3_active_clients.cnt, 1);
 
 	/* Create workqueues for power management */
-	ipa3_ctx->power_mgmt_wq =
-		create_singlethread_workqueue("ipa_power_mgmt");
+	ipa3_ctx->power_mgmt_wq = alloc_workqueue("ipa_power_mgmt",
+			WQ_MEM_RECLAIM | WQ_UNBOUND | WQ_SYSFS | WQ_HIGHPRI, 1);
 	if (!ipa3_ctx->power_mgmt_wq) {
 		IPAERR("failed to create power mgmt wq\n");
 		result = -ENOMEM;
 		goto fail_gsi_map;
 	}
+	mutex_init(&ipa3_ctx->recycle_stats_collection_lock);
+	memset(&ipa3_ctx->recycle_stats, 0, sizeof(struct ipa_lnx_pipe_page_recycling_stats));
+	memset(&ipa3_ctx->prev_coal_recycle_stats, 0, sizeof(struct ipa3_page_recycle_stats));
+	memset(&ipa3_ctx->prev_default_recycle_stats, 0, sizeof(struct ipa3_page_recycle_stats));
+	memset(&ipa3_ctx->prev_low_lat_data_recycle_stats, 0,
+		sizeof(struct ipa3_page_recycle_stats));
 
 	ipa3_ctx->transport_power_mgmt_wq =
 		create_singlethread_workqueue("transport_power_mgmt");
@@ -8946,6 +9230,17 @@ static int ipa3_pre_init(const struct ipa3_plat_drv_res *resource_p,
 		result = -ENOMEM;
 		goto fail_create_transport_wq;
 	}
+
+	/* Create workqueue for recycle stats collection */
+	ipa3_ctx->collect_recycle_stats_wq =
+			create_singlethread_workqueue("page_recycle_stats_collection");
+	if (!ipa3_ctx->collect_recycle_stats_wq) {
+		IPAERR("failed to create page recycling stats collection wq\n");
+		result = -ENOMEM;
+		goto fail_create_recycle_stats_wq;
+	}
+	memset(&ipa3_ctx->recycle_stats, 0,
+		   sizeof(ipa3_ctx->recycle_stats));
 
 	mutex_init(&ipa3_ctx->transport_pm.transport_pm_mutex);
 
@@ -9068,9 +9363,14 @@ static int ipa3_pre_init(const struct ipa3_plat_drv_res *resource_p,
 	INIT_LIST_HEAD(&ipa3_ctx->msg_wlan_client_list);
 	mutex_init(&ipa3_ctx->msg_wlan_client_lock);
 
+	/* store  ecm-connect-msg-list */
+	INIT_LIST_HEAD(&ipa3_ctx->msg_lan_list);
+	mutex_init(&ipa3_ctx->msg_lan_lock);
+
 	mutex_init(&ipa3_ctx->q6_proxy_clk_vote_mutex);
 	mutex_init(&ipa3_ctx->ipa_cne_evt_lock);
 	mutex_init(&ipa3_ctx->act_tbl_lock);
+	mutex_init(&ipa3_ctx->mhi_lock);
 
 	idr_init(&ipa3_ctx->ipa_idr);
 	spin_lock_init(&ipa3_ctx->idr_lock);
@@ -9216,9 +9516,19 @@ static int ipa3_pre_init(const struct ipa3_plat_drv_res *resource_p,
 	ipa3_ctx->buff_below_thresh_for_coal_pipe_notified = false;
 
 	mutex_init(&ipa3_ctx->app_clock_vote.mutex);
+	mutex_init(&ipa3_ctx->ssr_lock);
 	ipa3_ctx->is_modem_up = false;
 	ipa3_ctx->mhi_ctrl_state = IPA_MHI_CTRL_NOT_SETUP;
+	ipa3_ctx->is_mhi_coal_set = false;
 
+#if IS_ENABLED(CONFIG_QCOM_VA_MINIDUMP)
+	result = qcom_va_md_register("ipa_mini", &qcom_va_md_ipa_notif_blk);
+
+	if(result)
+		IPAERR("ipa mini qcom_va_md_register failed = %d\n", result);
+	else
+		IPADBG("ipa mini qcom_va_md_register success\n");
+#endif
 	return 0;
 
 fail_rmnet_ll_init:
@@ -9270,6 +9580,8 @@ fail_hdr_cache:
 fail_rt_rule_cache:
 	kmem_cache_destroy(ipa3_ctx->flt_rule_cache);
 fail_flt_rule_cache:
+	destroy_workqueue(ipa3_ctx->collect_recycle_stats_wq);
+fail_create_recycle_stats_wq:
 	destroy_workqueue(ipa3_ctx->transport_power_mgmt_wq);
 fail_create_transport_wq:
 	destroy_workqueue(ipa3_ctx->power_mgmt_wq);
@@ -9287,7 +9599,10 @@ fail_init_active_client:
 	ipa3_clk = NULL;
 fail_bus_reg:
 	for (i = 0; i < ipa3_ctx->icc_num_paths; i++)
-		if (ipa3_ctx->ctrl->icc_path[i]) {
+		if (IS_ERR_OR_NULL(ipa3_ctx->ctrl->icc_path[i])) {
+			ipa3_ctx->ctrl->icc_path[i] = NULL;
+			break;
+		} else {
 			icc_put(ipa3_ctx->ctrl->icc_path[i]);
 			ipa3_ctx->ctrl->icc_path[i] = NULL;
 		}
@@ -9299,8 +9614,10 @@ fail_mem_ctrl:
 	kfree(ipa3_ctx->ipa_tz_unlock_reg);
 	ipa3_ctx->ipa_tz_unlock_reg = NULL;
 fail_tz_unlock_reg:
-	if (ipa3_ctx->logbuf)
+	if (ipa3_ctx->logbuf) {
 		ipc_log_context_destroy(ipa3_ctx->logbuf);
+		ipa3_ctx->logbuf = NULL;
+	}
 fail_uc_file_alloc:
 	kfree(ipa3_ctx->gsi_fw_file_name);
 	ipa3_ctx->gsi_fw_file_name = NULL;
@@ -9493,6 +9810,40 @@ static void get_dts_tx_wrapper_cache_size(struct platform_device *pdev,
 		ipa_drv_res->tx_wrapper_cache_max_size);
 }
 
+
+static void get_dts_ipa_gen_rx_cmn_page_pool_sz_factor(struct platform_device *pdev,
+                struct ipa3_plat_drv_res *ipa_drv_res)
+{
+        int result;
+
+        result = of_property_read_u32 (
+                pdev->dev.of_node,
+                "qcom,ipa-gen-rx-cmn-page-pool-sz-factor",
+                &ipa_drv_res->ipa_gen_rx_cmn_page_pool_sz_factor);
+        if (result)
+                ipa_drv_res->ipa_gen_rx_cmn_page_pool_sz_factor = 0;
+
+        IPADBG("ipa_gen_rx_cmn_page_pool_sz_factor is set to %d",
+                ipa_drv_res->ipa_gen_rx_cmn_page_pool_sz_factor);
+}
+
+
+static void get_dts_ipa_gen_rx_cmn_temp_pool_sz_factor(struct platform_device *pdev,
+                struct ipa3_plat_drv_res *ipa_drv_res)
+{
+        int result;
+
+        result = of_property_read_u32 (
+                pdev->dev.of_node,
+                "qcom,ipa-gen-rx-cmn-temp-pool-sz-factor",
+                &ipa_drv_res->ipa_gen_rx_cmn_temp_pool_sz_factor);
+        if (result)
+                ipa_drv_res->ipa_gen_rx_cmn_temp_pool_sz_factor = 0;
+
+        IPADBG("ipa_gen_rx_cmn_temp_pool_sz_factor is set to %d",
+                ipa_drv_res->ipa_gen_rx_cmn_temp_pool_sz_factor);
+}
+
 static void ipa_dts_get_ulso_data(struct platform_device *pdev,
 		struct ipa3_plat_drv_res *ipa_drv_res)
 {
@@ -9581,6 +9932,7 @@ static int get_ipa_dts_configuration(struct platform_device *pdev,
 	ipa_drv_res->rmnet_ctl_enable = 0;
 	ipa_drv_res->rmnet_ll_enable = 0;
 	ipa_drv_res->ulso_wa = false;
+	ipa_drv_res->is_dual_pine_config = false;
 
 	/* Get IPA HW Version */
 	result = of_property_read_u32(pdev->dev.of_node, "qcom,ipa-hw-ver",
@@ -10214,6 +10566,10 @@ static int get_ipa_dts_configuration(struct platform_device *pdev,
 
 	get_dts_tx_wrapper_cache_size(pdev, ipa_drv_res);
 
+	get_dts_ipa_gen_rx_cmn_page_pool_sz_factor(pdev, ipa_drv_res);
+
+        get_dts_ipa_gen_rx_cmn_temp_pool_sz_factor(pdev, ipa_drv_res);
+
 	ipa_dts_get_ulso_data(pdev, ipa_drv_res);
 
 	result = of_property_read_u32(pdev->dev.of_node,
@@ -10225,6 +10581,13 @@ static int get_ipa_dts_configuration(struct platform_device *pdev,
 	else
 		IPADBG(": found ipa_drv_res->max_num_smmu_cb = %d\n",
 			ipa_drv_res->max_num_smmu_cb);
+
+	ipa_drv_res->is_dual_pine_config =
+		of_property_read_bool(pdev->dev.of_node,
+		"qcom,use-dual-pine-config");
+	IPADBG(": Use dual pine config = %s\n",
+		ipa_drv_res->is_dual_pine_config
+		? "True" : "False");
 
 	return 0;
 }
@@ -10600,6 +10963,19 @@ static int ipa_smmu_ap_cb_probe(struct device *dev)
 		ipa3_iommu_map(cb->iommu_domain,
 				iova_p, pa_p, size_p,
 				IOMMU_READ | IOMMU_WRITE);
+
+		ipa3_ctx->per_stats_smem_pa = iova;
+		ipa3_ctx->per_stats_smem_va = smem_addr;
+
+		/**
+		 * Force type casting to perpheral stats structure.
+		 * First 2kB of the FILTER_TABLE SMEM is allocated for
+		 * Peripheral stats design. If there is a need to
+		 * use rest of FILTER_TABLE_SMEM it should be used from
+		 * smem_addr + 2KB offset
+		 */
+		ret = ipa3_peripheral_stats_init((union ipa_peripheral_stats *) smem_addr);
+		if(ret)	IPAERR("IPA Peripheral stats init failure = %d ", ret);
 	}
 
 	smmu_info.present[IPA_SMMU_CB_AP] = true;
@@ -10705,6 +11081,8 @@ static int ipa3_attach_to_smmu(void)
 			}
 		}
 	} else {
+		ipa3_ctx->pdev = &ipa3_ctx->master_pdev->dev;
+		ipa3_ctx->uc_pdev = &ipa3_ctx->master_pdev->dev;
 		IPADBG("smmu is disabled\n");
 	}
 	return 0;
@@ -10996,16 +11374,27 @@ int ipa3_plat_drv_probe(struct platform_device *pdev_p)
 				return -EOPNOTSUPP;
 			}
 		}
+		/* Below update of pre init for non smmu device, As
+		 * existing flow initialzies only for smmu
+		 * enabled node.*/
+
+		result = ipa3_pre_init(&ipa3_res, pdev_p);
+		if (result) {
+			IPAERR("ipa3_init failed\n");
+			goto err_check;
+		}
 		ipa_fw_load_sm_handle_event(IPA_FW_LOAD_EVNT_SMMU_DONE);
+		goto skip_repeat_pre_init;
 	}
 
 	/* Proceed to real initialization */
 	result = ipa3_pre_init(&ipa3_res, pdev_p);
 	if (result) {
 		IPAERR("ipa3_init failed\n");
-		return result;
+		goto err_check;
 	}
 
+skip_repeat_pre_init:
 	result = of_platform_populate(pdev_p->dev.of_node,
 		ipa_plat_drv_match, NULL, &pdev_p->dev);
 	if (result) {
@@ -11013,8 +11402,14 @@ int ipa3_plat_drv_probe(struct platform_device *pdev_p)
 		return result;
 	}
 
-	if (result && result != -EPROBE_DEFER)
-		IPAERR("ipa: ipa_plat_drv_probe failed\n");
+err_check:
+	if (result) {
+		if (result != -EPROBE_DEFER) {
+			IPAERR("ipa: ipa_plat_drv_probe failed\n");
+		} else {
+			gsi_unmap_base();
+		}
+	}
 
 	return result;
 }
@@ -11034,7 +11429,8 @@ int ipa3_ap_suspend(struct device *dev)
 	int i;
 
 	IPADBG("Enter...\n");
-
+	if (!of_device_is_compatible(dev->of_node,"qcom,ipa"))
+		return 0;
 	/* In case there is a tx/rx handler in polling mode fail to suspend */
 	for (i = 0; i < ipa3_ctx->ipa_num_pipes; i++) {
 		if (ipa3_ctx->ep[i].sys &&
@@ -11045,6 +11441,13 @@ int ipa3_ap_suspend(struct device *dev)
 		}
 	}
 
+#ifdef CONFIG_DEEPSLEEP
+	if (mem_sleep_current == PM_SUSPEND_MEM) {
+		IPADBG("Enter deepsleep suspend\n");
+		ipa3_deepsleep_suspend();
+		IPADBG("Exit deepsleep suspend\n");
+	}
+#endif
 	ipa_pm_deactivate_all_deferred();
 
 	IPADBG("Exit\n");
@@ -11076,6 +11479,59 @@ bool ipa3_get_lan_rx_napi(void)
 {
 	return ipa3_ctx->lan_rx_napi_enable;
 }
+
+
+#ifdef CONFIG_DEEPSLEEP
+static void ipa3_deepsleep_suspend(void)
+{
+	IPADBG("Entry\n");
+	IPA_ACTIVE_CLIENTS_INC_SIMPLE();
+
+	/* To allow default routing table delection using this flag */
+	ipa3_ctx->deepsleep = true;
+	/*Disabling the LAN NAPI*/
+	ipa3_disable_napi_lan_rx();
+	/*NOt allow uC related operations until uC load again*/
+	ipa3_ctx->uc_ctx.uc_loaded = false;
+	/*Disconnecting LAN PROD/LAN CONS/CMD PROD apps pipes*/
+	ipa3_teardown_apps_pipes();
+	/*Deregistering the GSI driver*/
+	gsi_deregister_device(ipa3_ctx->gsi_dev_hdl, false);
+	/*Destroying filter table ids*/
+	ipa3_destroy_flt_tbl_idrs();
+	/*Disabling IPA interrupt*/
+	ipa3_remove_interrupt_handler(IPA_TX_SUSPEND_IRQ);
+	ipa3_interrupts_destroy(ipa3_res.ipa_irq, &ipa3_ctx->master_pdev->dev);
+	ipa3_uc_interface_destroy();
+	/*Destroy the NAT device*/
+	ipa3_nat_ipv6ct_destroy_devices();
+	/*Freeing memory allocated for coalesing and dma task*/
+	ipa3_free_coal_close_frame();
+	ipa3_free_dma_task_for_gsi();
+	/*Destroying ipa hal module*/
+	ipahal_destroy();
+	ipa3_ctx->ipa_initialization_complete = false;
+	ipa3_debugfs_remove();
+	/*Unloading IPA FW to allow FW load in resume*/
+	ipa3_pil_unload_ipa_fws();
+	/*Calling framework API to reset IPA ready flag to false*/
+	ipa_fmwk_deepsleep_entry_ipa();
+	IPA_ACTIVE_CLIENTS_DEC_SIMPLE();
+	IPADBG("Exit\n");
+}
+
+static void ipa3_deepsleep_resume(void)
+{
+
+	IPADBG("Entry\n");
+	/*After deeplseep exit we shouldn't allow delete the default routing table*/
+	ipa3_ctx->deepsleep = false;
+	/*Scheduling WQ to load IPA FW*/
+	queue_work(ipa3_ctx->transport_power_mgmt_wq,
+		&ipa3_fw_loading_work);
+	IPADBG("Exit\n");
+}
+#endif
 
 static void ipa_gsi_notify_cb(struct gsi_per_notify *notify)
 {
@@ -11180,6 +11636,7 @@ int ipa3_iommu_map(struct iommu_domain *domain,
 
 	return iommu_map(domain, iova, paddr, size, prot);
 }
+EXPORT_SYMBOL(ipa3_iommu_map);
 
 /**
  * ipa3_get_smmu_params()- Return the ipa3 smmu related params.
@@ -11528,6 +11985,8 @@ static int __init ipa_module_init(void)
 		/* Register as a PCI device driver */
 		return pci_register_driver(&ipa_pci_driver);
 	}
+
+	register_pm_notifier(&ipa_pm_notifier);
 	/* Register as a platform device driver */
 	return platform_driver_register(&ipa_plat_drv);
 }
@@ -11542,6 +12001,7 @@ static void __exit ipa_module_exit(void)
 		kfree(ipa3_ctx->hw_stats);
 		ipa3_ctx->hw_stats = NULL;
 	}
+	unregister_pm_notifier(&ipa_pm_notifier);
 	kfree(ipa3_ctx);
 	ipa3_ctx = NULL;
 }

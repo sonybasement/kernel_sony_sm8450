@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2013-2021, The Linux Foundation. All rights reserved.
+ *
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -26,8 +28,10 @@
 #define IPA_Q6_SERVICE_SVC_ID 0x31
 #define IPA_Q6_SERVICE_INS_ID 2
 
+#define IPA_PER_STATS_SMEM_SIZE (2*1024)
+
 #define QMI_SEND_STATS_REQ_TIMEOUT_MS 5000
-#define QMI_SEND_REQ_TIMEOUT_MS 60000
+#define QMI_SEND_REQ_TIMEOUT_MS 10000
 #define QMI_MHI_SEND_REQ_TIMEOUT_MS 1000
 
 #define QMI_IPA_FORCE_CLEAR_DATAPATH_TIMEOUT_MS 1000
@@ -122,7 +126,7 @@ static void ipa3_handle_indication_req(struct qmi_handle *qmi_handle,
 
 	/* check if need sending indication to modem */
 	if (ipa3_qmi_modem_init_fin)	{
-		IPAWANDBG("send indication to modem (%d)\n",
+		IPAWANDBG("send init complete indication to modem (%d)\n",
 		ipa3_qmi_modem_init_fin);
 		memset(&ind, 0, sizeof(struct
 				ipa_master_driver_init_complt_ind_msg_v01));
@@ -141,7 +145,13 @@ static void ipa3_handle_indication_req(struct qmi_handle *qmi_handle,
 			ipa3_qmi_indication_fin = false;
 		}
 	} else {
-		IPAWANERR("not send indication\n");
+		IPAWANDBG("modem init not complete, did not send indication\n");
+	}
+
+	/* check if need to send MHI RSC pipe to modem */
+	if (ipa3_ctx->is_mhi_coal_set) {
+		IPAWANDBG("Sending coalescing pipe indication to Q6\n");
+		ipa_send_mhi_coal_endp_ind_to_modem(false);
 	}
 }
 
@@ -548,16 +558,22 @@ static int ipa3_qmi_send_req_wait(struct qmi_handle *client_handle,
 	struct qmi_txn txn;
 	int ret;
 
-	if (!client_handle)
+	mutex_lock(&ipa3_qmi_lock);
+
+	if (!client_handle || client_handle != ipa_q6_clnt ) {
+		IPADBG("Q6 QMI client pointer already freed\n");
+		mutex_unlock(&ipa3_qmi_lock);
 		return -EINVAL;
+	}
+
 	ret = qmi_txn_init(client_handle, &txn, resp_desc->ei_array, resp);
 
 	if (ret < 0) {
 		IPAWANERR("QMI txn init failed, ret= %d\n", ret);
+		mutex_unlock(&ipa3_qmi_lock);
 		return ret;
 	}
 
-	mutex_lock(&ipa3_qmi_lock);
 	ret = qmi_send_request(client_handle,
 		&ipa3_qmi_ctx->server_sq,
 		&txn,
@@ -566,19 +582,16 @@ static int ipa3_qmi_send_req_wait(struct qmi_handle *client_handle,
 		req_desc->ei_array,
 		req);
 
-	if (unlikely(!ipa_q6_clnt)) {
-		mutex_unlock(&ipa3_qmi_lock);
-		return -EINVAL;
-	}
 
-	mutex_unlock(&ipa3_qmi_lock);
 
 	if (ret < 0) {
 		qmi_txn_cancel(&txn);
+		mutex_unlock(&ipa3_qmi_lock);
 		return ret;
 	}
-	ret = qmi_txn_wait(&txn, msecs_to_jiffies(timeout_ms));
 
+	ret = qmi_txn_wait(&txn, msecs_to_jiffies(timeout_ms));
+	mutex_unlock(&ipa3_qmi_lock);
 	return ret;
 }
 
@@ -687,10 +700,16 @@ static int ipa3_qmi_init_modem_send_sync_msg(void)
 
 	req.hw_drop_stats_base_addr_valid = true;
 	req.hw_drop_stats_base_addr =
-		IPA_MEM_PART(stats_drop_ofst) + smem_restr_bytes;
+		IPA_MEM_PART(q6_stats_drop_ofst) + smem_restr_bytes;
 
 	req.hw_drop_stats_table_size_valid = true;
-	req.hw_drop_stats_table_size = IPA_MEM_PART(stats_drop_size);
+	req.hw_drop_stats_table_size = IPA_MEM_PART(q6_stats_drop_size);
+
+	if (ipa3_ctx->platform_type != IPA_PLAT_TYPE_APQ) {
+		req.per_stats_smem_info_valid = true;
+		req.per_stats_smem_info.size = IPA_PER_STATS_SMEM_SIZE;
+		req.per_stats_smem_info.block_start_addr = ipa3_ctx->per_stats_smem_pa;
+	}
 
 	if (!ipa3_uc_loaded_check()) {  /* First time boot */
 		req.is_ssr_bootup_valid = false;
@@ -1768,7 +1787,8 @@ static void ipa3_q6_clnt_svc_arrive(struct work_struct *work)
 	/* Initialize modem IPA-driver */
 	IPAWANDBG("send ipa3_qmi_init_modem_send_sync_msg to modem\n");
 	rc = ipa3_qmi_init_modem_send_sync_msg();
-	if ((rc == -ENETRESET) || (rc == -ENODEV) || (rc == -ECONNRESET)) {
+	if ((rc == -ENETRESET) || (rc == -ENODEV) || (rc == -ECONNRESET) ||
+		atomic_read(&ipa3_ctx->is_ssr)) {
 		IPAWANERR(
 		"ipa3_qmi_init_modem_send_sync_msg failed due to SSR!\n");
 		/* Cleanup when ipa3_wwan_remove is called */
@@ -2132,6 +2152,7 @@ void ipa3_qmi_service_exit(void)
 
 	workqueues_stopped = true;
 
+	IPADBG("Entry\n");
 	/* qmi-service */
 	if (ipa3_svc_handle != NULL) {
 		qmi_handle_release(ipa3_svc_handle);
@@ -2164,6 +2185,7 @@ void ipa3_qmi_service_exit(void)
 	ipa3_qmi_indication_fin = false;
 	ipa3_modem_init_cmplt = false;
 	send_qmi_init_q6 = true;
+	IPADBG("Exit\n");
 }
 
 void ipa3_qmi_stop_workqueues(void)

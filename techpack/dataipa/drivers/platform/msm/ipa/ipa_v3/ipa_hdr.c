@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include "ipa_i.h"
@@ -98,8 +99,10 @@ static int ipa3_hdr_proc_ctx_to_hw_format(struct ipa_mem_buffer *mem,
 
 		/* Check the pointer and header length to avoid dangerous overflow in HW */
 		if (unlikely(!entry->hdr || !entry->hdr->offset_entry ||
-			entry->hdr->hdr_len > ipa_hdr_bin_sz[IPA_HDR_BIN_MAX - 1]))
+			entry->hdr->hdr_len > ipa_hdr_bin_sz[IPA_HDR_BIN_MAX - 1])) {
+			IPAERR_RL("Found invalid hdr entry\n");
 			return -EINVAL;
+		}
 
 		ret = ipahal_cp_proc_ctx_to_hw_buff(entry->type, mem->base,
 				entry->offset_entry->offset,
@@ -130,6 +133,7 @@ static int ipa3_generate_hdr_proc_ctx_hw_tbl(u64 hdr_sys_addr,
 	struct ipa_mem_buffer *mem, struct ipa_mem_buffer *aligned_mem)
 {
 	gfp_t flag = GFP_KERNEL;
+	int ret;
 
 	mem->size = (ipa3_ctx->hdr_proc_ctx_tbl.end) ? : 4;
 
@@ -156,7 +160,12 @@ alloc:
 		(aligned_mem->phys_base - mem->phys_base);
 	aligned_mem->size = mem->size - IPA_HDR_PROC_CTX_TABLE_ALIGNMENT_BYTE;
 	memset(aligned_mem->base, 0, aligned_mem->size);
-	return ipa3_hdr_proc_ctx_to_hw_format(aligned_mem, hdr_sys_addr);
+	ret = ipa3_hdr_proc_ctx_to_hw_format(aligned_mem, hdr_sys_addr);
+	if (ret) {
+		dma_free_coherent(ipa3_ctx->pdev, mem->size, mem->base, mem->phys_base);
+		return ret;
+	}
+	return ret;
 }
 
 /**
@@ -360,6 +369,11 @@ int __ipa_commit_hdr_v3_0(void)
 		ipa3_ctx->hdr_sys_mem = hdr_mem[HDR_TBL_SYS];
 	}
 
+	else {
+		dma_free_coherent(ipa3_ctx->pdev, hdr_mem[HDR_TBL_SYS].size,
+		hdr_mem[HDR_TBL_SYS].base,hdr_mem[HDR_TBL_SYS].phys_base);
+        }
+
 	if (ipa3_ctx->hdr_proc_ctx_tbl_lcl) {
 		dma_free_coherent(ipa3_ctx->pdev, ctx_mem.size, ctx_mem.base,
 			ctx_mem.phys_base);
@@ -371,6 +385,10 @@ int __ipa_commit_hdr_v3_0(void)
 					ipa3_ctx->hdr_proc_ctx_mem.base,
 					ipa3_ctx->hdr_proc_ctx_mem.phys_base);
 			ipa3_ctx->hdr_proc_ctx_mem = ctx_mem;
+		}
+		else {
+			dma_free_coherent(ipa3_ctx->pdev, ctx_mem.size,
+			ctx_mem.base,ctx_mem.phys_base);
 		}
 	}
 	goto end;
@@ -543,12 +561,13 @@ bad_len:
 static int __ipa_add_hdr(struct ipa_hdr_add *hdr, bool user,
 	struct ipa3_hdr_entry **entry_out)
 {
-	struct ipa3_hdr_entry *entry;
+	struct ipa3_hdr_entry *entry, *entry_t, *next;
 	struct ipa_hdr_offset_entry *offset = NULL;
 	u32 bin;
 	struct ipa3_hdr_tbl *htbl;
 	int id;
 	int mem_size;
+	enum hdr_tbl_storage hdr_tbl_loc;
 
 	if (hdr->hdr_len > IPA_HDR_MAX_SIZE) {
 		IPAERR_RL("bad param\n");
@@ -578,6 +597,29 @@ static int __ipa_add_hdr(struct ipa_hdr_add *hdr, bool user,
 	entry->is_lcl = ((IPA_MEM_PART(apps_hdr_size_ddr) &&
 			 (entry->is_partial || (hdr->status == IPA_HDR_TO_DDR_PATTERN))) ||
 			 !IPA_MEM_PART(apps_hdr_size)) ? false : true;
+
+	/* check to see if adding header entry with duplicate name */
+	for (hdr_tbl_loc = HDR_TBL_LCL; hdr_tbl_loc < HDR_TBLS_TOTAL; hdr_tbl_loc++) {
+		list_for_each_entry_safe(entry_t, next,
+			&ipa3_ctx->hdr_tbl[hdr_tbl_loc].head_hdr_entry_list, link) {
+
+			/* return if adding the same name */
+			if (!strcmp(entry_t->name, entry->name) && (user == true)) {
+				IPAERR_RL("IPACM Trying to add duplicate hdr %s\n",
+					entry_t->name);
+
+				/* return the original entry */
+				if (entry_out) {
+					IPAERR_RL("return old entry len=%d hdl=%d\n",
+						entry_t->hdr_len, entry_t->id);
+					hdr->hdr_hdl = entry_t->id;
+					*entry_out = entry_t;
+				}
+				kmem_cache_free(ipa3_ctx->hdr_cache, entry);
+				return 0;
+			}
+		}
+	}
 
 	if (hdr->hdr_len <= ipa_hdr_bin_sz[IPA_HDR_BIN0])
 		bin = IPA_HDR_BIN0;
@@ -616,11 +658,20 @@ static int __ipa_add_hdr(struct ipa_hdr_add *hdr, bool user,
 				mem_size = IPA_MEM_PART(apps_hdr_size_ddr);
 				entry->is_lcl = false;
 			} else {
-				/* if the entry is intended to be in DDR,
-				   and there is no space -> error */
-				IPAERR("No space in DDR header buffer! Requested: %d Left: %d\n",
-				       ipa_hdr_bin_sz[bin], mem_size - htbl->end);
-				goto bad_hdr_len;
+				/* check if DDR free list */
+				if (list_empty(&htbl->head_free_offset_list[bin])) {
+					IPAERR("No space in DDR header buffer! Requested: %d Left: %d name %s, end %d\n",
+						ipa_hdr_bin_sz[bin], mem_size - htbl->end, entry->name, htbl->end);
+					goto bad_hdr_len;
+				} else {
+					/* get the first free slot */
+					offset = list_first_entry(&htbl->head_free_offset_list[bin],
+						struct ipa_hdr_offset_entry, link);
+					list_move(&offset->link, &htbl->head_offset_list[bin]);
+					entry->offset_entry = offset;
+					offset->ipacm_installed = user;
+					goto free_list;
+				}
 			}
 		}
 		offset = kmem_cache_zalloc(ipa3_ctx->hdr_offset_cache,
@@ -649,6 +700,8 @@ static int __ipa_add_hdr(struct ipa_hdr_add *hdr, bool user,
 		entry->offset_entry = offset;
 		offset->ipacm_installed = user;
 	}
+
+free_list:
 
 	list_add(&entry->link, &htbl->head_hdr_entry_list);
 	htbl->hdr_cnt++;
