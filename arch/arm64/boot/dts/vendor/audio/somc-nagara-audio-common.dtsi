@@ -210,6 +210,10 @@
 	qcom,swr-num-dev = <1>;
 };
 
+&swr_haptics{
+	status = "disabled";
+};
+
 &swr2{
 	qcom,swr-num-dev = <1>;
 };

@@ -1,0 +1,25 @@
+ifeq ($(CONFIG_ARCH_SONY_NAGARA),y)
+ifeq ($(CONFIG_MACH_SONY_PDX223),y)
+dtbo-$(CONFIG_ARCH_WAIPIO) += waipio-audio.dtbo \
+	          somc-nagara-audio-pdx223.dtbo
+endif
+
+ifeq ($(CONFIG_MACH_SONY_PDX224),y)
+dtbo-$(CONFIG_ARCH_WAIPIO) += waipio-audio.dtbo \
+	          somc-nagara-audio-pdx224.dtbo
+endif
+
+else
+dtbo-$(CONFIG_ARCH_WAIPIO) += waipio-audio.dtbo \
+                 waipio-audio-cdp.dtbo \
+                 waipio-audio-mtp.dtbo \
+                 waipio-audio-qrd.dtbo \
+                 waipio-audio-atp.dtbo \
+                 waipio-audio-rumi.dtbo \
+                 waipio-audio-hdk.dtbo
+
+endif
+
+ always-y    := $(dtb-y) $(dtbo-y)
+ subdir-y    := $(dts-dirs)
+ clean-files    := *.dtb *.dtbo

@@ -1,3 +1,6 @@
+/dts-v1/;
+/plugin/;
+
 #include "waipio-audio-qrd.dtsi"
 #include "somc-nagara-audio-common.dtsi"
 #include "somc-nagara-audio-pdx223.dtsi"

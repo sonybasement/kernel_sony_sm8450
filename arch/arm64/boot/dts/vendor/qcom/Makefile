@@ -1,30 +1,26 @@
-ifneq ($(CONFIG_ARCH_QTI_VM), y)
 ifeq ($(CONFIG_BUILD_ARM64_DT_OVERLAY),y)
-ifeq ($(CONFIG_ARCH_SONY_NAGARA),y)
 
 ifeq ($(CONFIG_MACH_SONY_PDX223),y)
 dtbo-$(CONFIG_ARCH_WAIPIO) += waipio-nagara-pdx223_generic-overlay.dtbo
-
 waipio-nagara-pdx223_generic-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb waipio-lte.dtb
 endif
 
 ifeq ($(CONFIG_MACH_SONY_PDX224),y)
 dtbo-$(CONFIG_ARCH_WAIPIO) += waipio-nagara-pdx224_generic-overlay.dtbo
-
 waipio-nagara-pdx224_generic-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb waipio-lte.dtb
 endif
+
 else
-# pdx223
-dtb-$(CONFIG_MACH_SONY_PDX223) += waipio-nagara-pdx223_generic.dtb \
+dtb-$(CONFIG_MACH_SONY_PDX223) += \
+	waipio-nagara-pdx223_generic.dtb \
 	waipio-v2-nagara-pdx223_generic.dtb \
-	waipio-lte-nagara-pdx223_generic.dtb
-	
-# pdx224
-dtb-$(CONFIG_MACH_SONY_PDX224) += waipio-nagara-pdx224_generic.dtb \
-	waipio-v2-nagara-pdx224_generic.dtb \
+	waipio-lte-nagara-pdx223_generic.dtb 
+
+# Waipio V2
+dtb-$(CONFIG_MACH_SONY_PDX224) += \
+	waipio-nagara-pdx224_generic.dtb
+	waipio-v2-nagara-pdx224_generic.dtb
 	waipio-lte-nagara-pdx224_generic.dtb
-endif
-endif
 endif
 
 ifeq ($(CONFIG_BUILD_ARM64_DT_OVERLAY),y)
@@ -116,34 +112,22 @@ dtbo-$(CONFIG_ARCH_WAIPIO) += waipio-rumi-overlay.dtbo \
 	waipio-qrd-pm8010-2s-overlay.dtbo \
 	waipio-atp-pm8010-overlay.dtbo \
 	waipiop-hdk-pm8010-overlay.dtbo \
-	waipio-lemur-mtp-pm8008-overlay.dtbo \
-	waipio-lemur-mtp-pm8010-overlay.dtbo \
-	waipio-lemur-cdp-pm8008-overlay.dtbo \
-	waipio-lemur-cdp-pm8010-overlay.dtbo \
-	waipio-kiwi-mtp-pm8008-overlay.dtbo \
-	waipio-kiwi-mtp-pm8010-overlay.dtbo \
-	waipio-kiwi-cdp-pm8008-overlay.dtbo \
-	waipio-kiwi-cdp-pm8010-overlay.dtbo
+	waipio-mtp-68disp-pm8008-overlay.dtbo \
+	waipio-mtp-68disp-pm8010-overlay.dtbo
 
 waipio-rumi-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb
 waipio-mtp-pm8008-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb waipio-lte.dtb
+waipio-mtp-68disp-pm8008-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb waipio-lte.dtb
 waipio-cdp-pm8008-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb waipio-lte.dtb
 waipio-qrd-pm8008-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb waipio-lte.dtb
 waipio-atp-pm8008-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb waipio-lte.dtb
 waipio-mtp-pm8010-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb waipio-lte.dtb
+waipio-mtp-68disp-pm8010-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb waipio-lte.dtb
 waipio-cdp-pm8010-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb waipio-lte.dtb
 waipio-qrd-pm8010-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb waipio-lte.dtb
 waipio-qrd-pm8010-2s-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb
 waipio-atp-pm8010-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb waipio-lte.dtb
 waipiop-hdk-pm8010-overlay.dtbo-base := waipiop.dtb waipiop-v2.dtb
-waipio-lemur-mtp-pm8008-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb waipio-lte.dtb
-waipio-lemur-mtp-pm8010-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb waipio-lte.dtb
-waipio-lemur-cdp-pm8008-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb waipio-lte.dtb
-waipio-lemur-cdp-pm8010-overlay.dtbo-base := waipio.dtb waipiop.dtb waipio-v2.dtb waipiop-v2.dtb waipio-lte.dtb
-waipio-kiwi-mtp-pm8008-overlay.dtbo-base := waipio.dtb waipio-v2.dtb waipio-lte.dtb
-waipio-kiwi-mtp-pm8010-overlay.dtbo-base := waipio.dtb waipio-v2.dtb waipio-lte.dtb
-waipio-kiwi-cdp-pm8008-overlay.dtbo-base := waipio.dtb waipio-v2.dtb waipio-lte.dtb
-waipio-kiwi-cdp-pm8010-overlay.dtbo-base := waipio.dtb waipio-v2.dtb waipio-lte.dtb
 else
 dtb-$(CONFIG_ARCH_WAIPIO) += waipio-rumi.dtb \
 	waipio-mtp-pm8008.dtb \

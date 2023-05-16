@@ -1,0 +1,26 @@
+ifeq ($(CONFIG_BUILD_ARM64_DT_OVERLAY), y)
+
+dtbo-$(CONFIG_ARCH_WAIPIO)		+= waipio-camera.dtbo
+dtbo-$(CONFIG_ARCH_WAIPIO)		+= waipio-camera-overlay-v2.dtbo
+
+ifeq ($(CONFIG_ARCH_SONY_NAGARA),y)
+ifeq ($(CONFIG_MACH_SONY_PDX223),y)
+dtbo-$(CONFIG_ARCH_WAIPIO)		+= waipio-camera-sensor-nagara-pdx223.dtbo
+endif # ($(findstring pdx223, $(SOMC_TARGET_PRODUCT)), pdx223)
+
+ifeq ($(CONFIG_MACH_SONY_PDX224),y)
+dtbo-$(CONFIG_ARCH_WAIPIO)		+= waipio-camera-sensor-nagara-pdx224.dtbo
+endif # ($(findstring pdx224, $(SOMC_TARGET_PRODUCT)), pdx224)
+
+else # ($(SOMC_PLATFORM), nagara)
+
+dtbo-$(CONFIG_ARCH_WAIPIO)		+= waipio-camera-sensor-mtp.dtbo \
+					waipio-camera-sensor-cdp.dtbo \
+					waipio-camera-sensor-qrd.dtbo
+
+endif # ($(SOMC_PLATFORM), nagara)
+endif # ($(CONFIG_BUILD_ARM64_DT_OVERLAY), y)
+
+always-y	:= $(dtbo-y) $(dtb-y)
+subdir-y	:= $(dts-dirs)
+clean-files	:= *.dtb *.dtbo

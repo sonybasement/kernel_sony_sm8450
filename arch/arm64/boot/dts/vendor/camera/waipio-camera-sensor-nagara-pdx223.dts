@@ -1,3 +1,6 @@
+/dts-v1/;
+/plugin/;
+
 #include <dt-bindings/clock/qcom,gcc-waipio.h>
 #include <dt-bindings/clock/qcom,camcc-waipio.h>
 #include <dt-bindings/interconnect/qcom,waipio.h>
@@ -11,4 +14,3 @@
 	qcom,msm-id = <457 0x10000>, <482 0x10000>, <457 0x20000>, <482 0x20000>;
 	qcom,board-id = <0x1000B 0>, <0x2000B 0>, <0x1010B 0>, <0x2010B 0>;
 };
-	

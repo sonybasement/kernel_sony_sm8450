@@ -1,0 +1,30 @@
+ifneq ($(CONFIG_ARCH_SONY_NAGARA),y)
+
+dtbo-$(CONFIG_ARCH_WAIPIO) += display/waipio-sde.dtbo \
+		display/waipio-sde-display-mtp-overlay.dtbo \
+		display/waipio-sde-display-cphy-mtp-overlay.dtbo \
+		display/waipio-sde-display-mtp-68disp-overlay.dtbo \
+		display/waipio-sde-display-cdp-overlay.dtbo \
+		display/waipio-sde-display-qrd-overlay.dtbo \
+		display/waipio-sde-display-hdk-overlay.dtbo \
+		display/waipio-sde-display-waipio-lemur-cdp-overlay.dtbo \
+		display/waipio-sde-display-waipio-lemur-mtp-overlay.dtbo \
+		display/waipio-sde-display-rumi-overlay.dtbo
+
+else
+
+ifeq ($(CONFIG_MACH_SONY_PDX223),y)
+dtbo-$(CONFIG_ARCH_WAIPIO) += display/waipio-sde.dtbo \
+	display/waipio-sde-display-pdx223-overlay.dtbo
+endif
+
+ifeq ($(CONFIG_MACH_SONY_PDX224),y)
+dtbo-$(CONFIG_ARCH_WAIPIO) += display/waipio-sde.dtbo \
+	display/waipio-sde-display-pdx224-overlay.dtbo
+endif
+
+endif
+
+always-y    := $(dtb-y) $(dtbo-y)
+subdir-y    := $(dts-dirs)
+clean-files    := *.dtb *.dtbo
