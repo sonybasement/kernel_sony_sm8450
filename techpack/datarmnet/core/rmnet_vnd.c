@@ -1,5 +1,5 @@
 /* Copyright (c) 2013-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2021 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -32,6 +32,7 @@
 #include "rmnet_vnd.h"
 #include "rmnet_genl.h"
 #include "rmnet_ll.h"
+#include "rmnet_ctl.h"
 
 #include "qmi_rmnet.h"
 #include "rmnet_qmi.h"
@@ -128,6 +129,7 @@ static netdev_tx_t rmnet_vnd_start_xmit(struct sk_buff *skb,
 				tmp = skb->next;
 				skb->dev = dev;
 				priv->stats.ll_tso_segs++;
+				skb_mark_not_on_list(skb);
 				rmnet_egress_handler(skb, low_latency);
 			}
 		} else if (!low_latency && skb_is_gso(skb)) {
@@ -166,6 +168,7 @@ static netdev_tx_t rmnet_vnd_start_xmit(struct sk_buff *skb,
 						skb_shinfo(skb)->gso_type = orig_gso_type;
 
 						priv->stats.tso_segment_success++;
+						skb_mark_not_on_list(skb);
 						rmnet_egress_handler(skb, low_latency);
 					}
 				}
@@ -552,6 +555,14 @@ static const char rmnet_ll_gstrings_stats[][ETH_GSTRING_LEN] = {
 	"LL TX FC err",
 };
 
+static const char rmnet_qmap_gstrings_stats[][ETH_GSTRING_LEN] = {
+	"QMAP RX success",
+	"QMAP RX errors",
+	"QMAP TX queued",
+	"QMAP TX errors",
+	"QMAP TX complete (MHI)",
+};
+
 static void rmnet_get_strings(struct net_device *dev, u32 stringset, u8 *buf)
 {
 	size_t off = 0;
@@ -567,6 +578,9 @@ static void rmnet_get_strings(struct net_device *dev, u32 stringset, u8 *buf)
 		off += sizeof(rmnet_port_gstrings_stats);
 		memcpy(buf + off, &rmnet_ll_gstrings_stats,
 		       sizeof(rmnet_ll_gstrings_stats));
+		off += sizeof(rmnet_ll_gstrings_stats);
+		memcpy(buf + off, &rmnet_qmap_gstrings_stats,
+		       sizeof(rmnet_qmap_gstrings_stats));
 		break;
 	}
 }
@@ -577,7 +591,8 @@ static int rmnet_get_sset_count(struct net_device *dev, int sset)
 	case ETH_SS_STATS:
 		return ARRAY_SIZE(rmnet_gstrings_stats) +
 		       ARRAY_SIZE(rmnet_port_gstrings_stats) +
-		       ARRAY_SIZE(rmnet_ll_gstrings_stats);
+		       ARRAY_SIZE(rmnet_ll_gstrings_stats) +
+		       ARRAY_SIZE(rmnet_qmap_gstrings_stats);
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -592,6 +607,7 @@ static void rmnet_get_ethtool_stats(struct net_device *dev,
 	struct rmnet_ll_stats *llp;
 	struct rmnet_port *port;
 	size_t off = 0;
+	u64 qmap_s[ARRAY_SIZE(rmnet_qmap_gstrings_stats)];
 
 	port = rmnet_get_port(priv->real_dev);
 
@@ -608,6 +624,12 @@ static void rmnet_get_ethtool_stats(struct net_device *dev,
 	off += ARRAY_SIZE(rmnet_port_gstrings_stats);
 	memcpy(data + off, llp,
 	       ARRAY_SIZE(rmnet_ll_gstrings_stats) * sizeof(u64));
+
+	off += ARRAY_SIZE(rmnet_ll_gstrings_stats);
+	memset(qmap_s, 0, sizeof(qmap_s));
+	rmnet_ctl_get_stats(qmap_s, ARRAY_SIZE(rmnet_qmap_gstrings_stats));
+	memcpy(data + off, qmap_s,
+	       ARRAY_SIZE(rmnet_qmap_gstrings_stats) * sizeof(u64));
 }
 
 static int rmnet_stats_reset(struct net_device *dev)
@@ -745,4 +767,9 @@ void rmnet_vnd_reset_mac_addr(struct net_device *dev)
 		return;
 
 	random_ether_addr(dev->perm_addr);
+}
+
+int netif_is_rmnet(const struct net_device *dev)
+{
+	return dev->netdev_ops == &rmnet_vnd_ops;
 }
