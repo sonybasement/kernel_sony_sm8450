@@ -1,4 +1,5 @@
 /* Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -345,11 +346,6 @@ ssize_t audio_pkt_write(struct file *file, const char __user *buf,
 		return -EINVAL;
 	}
 
-	if (count > MAX_PACKET_SIZE) {
-		AUDIO_PKT_ERR("Invalid packet size %zu\n", count);
-		return -EINVAL;
-	}
-
 	mutex_lock(&ap_priv->lock);
 	if (AUDIO_PKT_PROBED != ap_priv->status)
 	{
@@ -358,17 +354,34 @@ ssize_t audio_pkt_write(struct file *file, const char __user *buf,
 		return -ENETRESET;
 	}
 	mutex_unlock(&ap_priv->lock);
+	if (count < sizeof(struct gpr_hdr)) {
+		AUDIO_PKT_ERR("Invalid count %zu\n",count);
+		return  -EINVAL;
+	}
 
 	kbuf = memdup_user(buf, count);
 	if (IS_ERR(kbuf))
 		return PTR_ERR(kbuf);
 
 	audpkt_hdr = (struct gpr_hdr *) kbuf;
+
+	/* validate packet size */
+	if ((count > MAX_PACKET_SIZE) || (count < GPR_PKT_GET_PACKET_BYTE_SIZE(audpkt_hdr->header)))
+	{
+		ret = -EINVAL;
+		goto free_kbuf;
+	}
+
 	if (audpkt_hdr->opcode == APM_CMD_SHARED_MEM_MAP_REGIONS) {
+		if (count < sizeof(struct audio_gpr_pkt )) {
+			AUDIO_PKT_ERR("Invalid count %zu\n",count);
+			ret = -EINVAL;
+			goto free_kbuf;
+		}
 		ret = audpkt_chk_and_update_physical_addr((struct audio_gpr_pkt *) audpkt_hdr);
 		if (ret < 0) {
 			AUDIO_PKT_ERR("Update Physical Address Failed -%d\n", ret);
-		        return ret;
+			goto free_kbuf;
 		}
 	}
 
@@ -376,11 +389,17 @@ ssize_t audio_pkt_write(struct file *file, const char __user *buf,
 		ret = -ERESTARTSYS;
 		goto free_kbuf;
 	}
+	if (count < sizeof(struct gpr_pkt )) {
+		AUDIO_PKT_ERR("Invalid count %zu\n",count);
+		ret = -EINVAL;
+		mutex_unlock(&audpkt_dev->lock);
+		goto free_kbuf;
+	}
 	ret = gpr_send_pkt(ap_priv->adev,(struct gpr_pkt *) kbuf);
 	if (ret < 0) {
 		AUDIO_PKT_ERR("APR Send Packet Failed ret -%d\n", ret);
-		mutex_unlock(&audpkt_dev->lock);
-		return ret;
+		if (ret == -ECONNRESET)
+			ret = -ENETRESET;
 	}
 	mutex_unlock(&audpkt_dev->lock);
 
