@@ -10,6 +10,7 @@
 #include "adreno.h"
 #include "adreno_sysfs.h"
 #include "adreno_trace.h"
+#include "kgsl_bus.h"
 #include "kgsl_eventlog.h"
 #include "kgsl_gmu_core.h"
 #include "kgsl_timeline.h"
@@ -537,6 +538,32 @@ static int dispatcher_queue_context(struct adreno_device *adreno_dev,
 	return 0;
 }
 
+/*
+ * Real time clients may demand high BW and have strict latency requirement.
+ * GPU bus DCVS is not fast enough to account for sudden BW requirements.
+ * Bus hint helps to bump up the bus vote (IB) upfront for known time-critical
+ * workloads.
+ */
+static void process_rt_bus_hint(struct kgsl_device *device, bool on)
+{
+	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
+	struct adreno_dispatcher_drawqueue *drawqueue =
+			DRAWQUEUE(&adreno_dev->ringbuffers[0]);
+
+	if (!adreno_is_preemption_enabled(adreno_dev) ||
+		!device->pwrctrl.rt_bus_hint)
+		return;
+
+	if (device->pwrctrl.rt_bus_hint_active == on)
+		return;
+
+	if (on && drawqueue->inflight == 1)
+		kgsl_bus_update(device, KGSL_BUS_VOTE_RT_HINT_ON);
+
+	if (!on && drawqueue->inflight == 0)
+		kgsl_bus_update(device, KGSL_BUS_VOTE_RT_HINT_OFF);
+}
+
 #define ADRENO_DRAWOBJ_PROFILE_COUNT \
 	(PAGE_SIZE / sizeof(struct adreno_drawobj_profile_entry))
 
@@ -596,6 +623,8 @@ static int sendcmd(struct adreno_device *adreno_dev,
 			ADRENO_DRAWOBJ_PROFILE_COUNT;
 	}
 
+	process_rt_bus_hint(device, true);
+
 	ret = adreno_ringbuffer_submitcmd(adreno_dev, cmdobj, &time);
 
 	/*
@@ -627,6 +656,8 @@ static int sendcmd(struct adreno_device *adreno_dev,
 	if (ret) {
 		dispatcher->inflight--;
 		dispatch_q->inflight--;
+
+		process_rt_bus_hint(device, false);
 
 		mutex_unlock(&device->mutex);
 
@@ -932,6 +963,7 @@ static void _dispatcher_update_timers(struct adreno_device *adreno_dev)
 	/* Kick the idle timer */
 	mutex_lock(&device->mutex);
 	kgsl_pwrscale_update(device);
+	process_rt_bus_hint(device, false);
 	kgsl_start_idle_timer(device);
 	mutex_unlock(&device->mutex);
 
@@ -1566,13 +1598,15 @@ static void adreno_fault_header(struct kgsl_device *device,
 	const char *type = fault & ADRENO_GMU_FAULT ? "gmu" : "gpu";
 
 	if (!gx_on) {
-		if (drawobj != NULL)
+		if (drawobj != NULL) {
 			pr_fault(device, drawobj,
 				"%s fault ctx %u ctx_type %s ts %u and GX is OFF\n",
 				type, drawobj->context->id,
 				kgsl_context_type(drawctxt->type),
 				drawobj->timestamp);
-		else
+			pr_fault(device, drawobj, "cmdline: %s\n",
+					drawctxt->base.proc_priv->cmdline);
+		} else
 			dev_err(device->dev, "RB[%d] : %s fault and GX is OFF\n",
 				id, type);
 
@@ -1604,6 +1638,9 @@ static void adreno_fault_header(struct kgsl_device *device,
 			kgsl_context_type(drawctxt->type),
 			drawobj->timestamp, status,
 			rptr, wptr, ib1base, ib1sz, ib2base, ib2sz);
+
+		pr_fault(device, drawobj, "cmdline: %s\n",
+				drawctxt->base.proc_priv->cmdline);
 
 		if (rb != NULL)
 			pr_fault(device, drawobj,
@@ -1932,7 +1969,7 @@ static void do_header_and_snapshot(struct kgsl_device *device, int fault,
 	/* Always dump the snapshot on a non-drawobj failure */
 	if (cmdobj == NULL) {
 		adreno_fault_header(device, rb, NULL, fault);
-		kgsl_device_snapshot(device, NULL, fault & ADRENO_GMU_FAULT);
+		kgsl_device_snapshot(device, NULL, NULL, fault & ADRENO_GMU_FAULT);
 		return;
 	}
 
@@ -1944,7 +1981,7 @@ static void do_header_and_snapshot(struct kgsl_device *device, int fault,
 	adreno_fault_header(device, rb, cmdobj, fault);
 
 	if (!(drawobj->context->flags & KGSL_CONTEXT_NO_SNAPSHOT))
-		kgsl_device_snapshot(device, drawobj->context,
+		kgsl_device_snapshot(device, drawobj->context, NULL,
 					fault & ADRENO_GMU_FAULT);
 }
 
@@ -2081,6 +2118,9 @@ static int dispatcher_do_fault(struct adreno_device *adreno_dev)
 
 	/* Reset the dispatcher queue */
 	dispatcher->inflight = 0;
+
+	/* Remove the bus hint */
+	device->pwrctrl.rt_bus_hint_active = false;
 
 	/* Reset the GPU and make sure halt is not set during recovery */
 	halt = adreno_gpu_halt(adreno_dev);
@@ -2357,6 +2397,7 @@ static void _dispatcher_power_down(struct adreno_device *adreno_dev)
 		complete_all(&dispatcher->idle_gate);
 
 	adreno_dispatcher_stop_fault_timer(device);
+	process_rt_bus_hint(device, false);
 
 	if (test_bit(ADRENO_DISPATCHER_POWER, &dispatcher->priv)) {
 		adreno_active_count_put(adreno_dev);
@@ -2761,6 +2802,8 @@ static struct attribute *dispatcher_attrs[] = {
 	NULL,
 };
 
+ATTRIBUTE_GROUPS(dispatcher);
+
 static ssize_t dispatcher_sysfs_show(struct kobject *kobj,
 				   struct attribute *attr, char *buf)
 {
@@ -2795,7 +2838,7 @@ static const struct sysfs_ops dispatcher_sysfs_ops = {
 
 static struct kobj_type ktype_dispatcher = {
 	.sysfs_ops = &dispatcher_sysfs_ops,
-	.default_attrs = dispatcher_attrs,
+	.default_groups = dispatcher_groups,
 };
 
 static const struct adreno_dispatch_ops swsched_ops = {

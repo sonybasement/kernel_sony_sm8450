@@ -149,6 +149,9 @@ static void gunyah_rx_peak(struct gunyah_pipe *pipe, void *data,
 	if (tail >= pipe->length)
 		tail -= pipe->length;
 
+	if (WARN_ON_ONCE(tail > pipe->length))
+		return;
+
 	len = min_t(size_t, count, pipe->length - tail);
 	if (len)
 		memcpy_fromio(data, pipe->fifo + tail, len);
@@ -189,6 +192,9 @@ static size_t gunyah_tx_avail(struct gunyah_pipe *pipe)
 	else
 		avail -= FIFO_FULL_RESERVE;
 
+	if (WARN_ON_ONCE(avail > pipe->length))
+		avail = 0;
+
 	return avail;
 }
 
@@ -199,6 +205,8 @@ static void gunyah_tx_write(struct gunyah_pipe *pipe, const void *data,
 	u32 head;
 
 	head = le32_to_cpu(*pipe->head);
+	if (WARN_ON_ONCE(head > pipe->length))
+		return;
 
 	len = min_t(size_t, count, pipe->length - head);
 	if (len)
@@ -452,7 +460,8 @@ static int qrtr_gunyah_rm_cb(struct notifier_block *nb, unsigned long cmd,
 
 	if (vm_status_payload->vm_status == GH_RM_VM_STATUS_READY) {
 		qrtr_gunyah_fifo_init(qdev);
-		if (qrtr_endpoint_register(&qdev->ep, QRTR_EP_NET_ID_AUTO, false)) {
+		if (qrtr_endpoint_register(&qdev->ep, QRTR_EP_NET_ID_AUTO,
+					   false, NULL)) {
 			pr_err("%s: endpoint register failed\n", __func__);
 			return NOTIFY_DONE;
 		}
@@ -647,7 +656,7 @@ static int qrtr_gunyah_probe(struct platform_device *pdev)
 	qdev->ep.xmit = qrtr_gunyah_send;
 	if (!qdev->master) {
 		ret = qrtr_endpoint_register(&qdev->ep, QRTR_EP_NET_ID_AUTO,
-					     false);
+					     false, NULL);
 		if (ret)
 			goto register_fail;
 	}

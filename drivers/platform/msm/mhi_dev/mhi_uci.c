@@ -1329,7 +1329,7 @@ static int __mhi_uci_client_read(struct uci_client *uci_handle,
 {
 	int ret_val = 0;
 
-	do {
+	while (!uci_handle->pkt_loc) {
 		if (!mhi_uci_are_channels_connected(uci_handle)) {
 			uci_log(UCI_DBG_ERROR,
 				"%s:Channels are not connected\n", __func__);
@@ -1374,7 +1374,7 @@ static int __mhi_uci_client_read(struct uci_client *uci_handle,
 				uci_handle->in_chan);
 			break;
 		}
-	} while (!uci_handle->pkt_loc);
+	}
 
 	return ret_val;
 }
@@ -1753,8 +1753,12 @@ static int mhi_uci_ctrl_set_tiocm(struct uci_client *client,
 
 	reinit_completion(ctrl_client->write_done);
 	ret_val = mhi_uci_send_packet(ctrl_client, ctrl_msg, sizeof(*ctrl_msg));
-	if (ret_val != sizeof(*ctrl_msg))
+	if (ret_val != sizeof(*ctrl_msg)) {
+		uci_log(UCI_DBG_ERROR, "Failed to send ctrl msg\n");
+		kfree(ctrl_msg);
+		ctrl_msg = NULL;
 		goto tiocm_error;
+	}
 	compl_ret = wait_for_completion_interruptible_timeout(
 			ctrl_client->write_done,
 			MHI_UCI_ASYNC_WRITE_TIMEOUT);
@@ -1773,7 +1777,6 @@ static int mhi_uci_ctrl_set_tiocm(struct uci_client *client,
 	return 0;
 
 tiocm_error:
-	kfree(ctrl_msg);
 	return ret_val;
 }
 

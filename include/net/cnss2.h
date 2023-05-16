@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _NET_CNSS2_H
@@ -11,6 +11,7 @@
 
 #define CNSS_MAX_FILE_NAME		20
 #define CNSS_MAX_TIMESTAMP_LEN		32
+#define CNSS_WLFW_MAX_BUILD_ID_LEN      128
 #define CNSS_MAX_DEV_MEM_NUM		4
 #define CNSS_CHIP_VER_ANY		0
 
@@ -75,6 +76,7 @@ struct cnss_soc_info {
 	char fw_build_timestamp[CNSS_MAX_TIMESTAMP_LEN + 1];
 	struct cnss_device_version device_version;
 	struct cnss_dev_mem_info dev_mem_info[CNSS_MAX_DEV_MEM_NUM];
+	char fw_build_id[CNSS_WLFW_MAX_BUILD_ID_LEN + 1];
 };
 
 struct cnss_wlan_runtime_ops {
@@ -96,6 +98,15 @@ enum cnss_bus_event_type {
 	BUS_EVENT_PCI_LINK_DOWN = 0,
 
 	BUS_EVENT_INVALID = 0xFFFF,
+};
+
+enum cnss_wfc_mode {
+	CNSS_WFC_MODE_OFF,
+	CNSS_WFC_MODE_ON,
+};
+
+struct cnss_wfc_cfg {
+	enum cnss_wfc_mode mode;
 };
 
 struct cnss_hang_event {
@@ -135,6 +146,9 @@ struct cnss_wlan_driver {
 	const struct pci_device_id *id_table;
 	u32 chip_version;
 	enum cnss_driver_mode (*get_driver_mode)(void);
+	int (*set_therm_cdev_state)(struct pci_dev *pci_dev,
+				    unsigned long thermal_state,
+				    int tcdev_id);
 };
 
 struct cnss_ce_tgt_pipe_cfg {
@@ -202,6 +216,10 @@ enum cnss_recovery_reason {
 	CNSS_REASON_LINK_DOWN,
 	CNSS_REASON_RDDM,
 	CNSS_REASON_TIMEOUT,
+};
+
+enum cnss_fw_caps {
+	CNSS_FW_CAP_DIRECT_LINK_SUPPORT,
 };
 
 enum cnss_remote_mem_type {
@@ -293,4 +311,13 @@ extern int cnss_get_mem_segment_info(enum cnss_remote_mem_type type,
 extern int cnss_get_pci_slot(struct device *dev);
 extern int cnss_pci_get_reg_dump(struct device *dev, uint8_t *buffer,
 				 uint32_t len);
+extern bool cnss_get_fw_cap(struct device *dev, enum cnss_fw_caps fw_cap);
+extern int cnss_set_wfc_mode(struct device *dev, struct cnss_wfc_cfg cfg);
+extern int cnss_thermal_cdev_register(struct device *dev,
+				      unsigned long max_state,
+				      int tcdev_id);
+extern void cnss_thermal_cdev_unregister(struct device *dev, int tcdev_id);
+extern int cnss_get_curr_therm_cdev_state(struct device *dev,
+					  unsigned long *thermal_state,
+					  int tcdev_id);
 #endif /* _NET_CNSS2_H */

@@ -11,6 +11,7 @@
 #define ICNSS_MAX_IRQ_REGISTRATIONS    12
 #define IWCN_MAX_IRQ_REGISTRATIONS    32
 #define ICNSS_MAX_TIMESTAMP_LEN        32
+#define ICNSS_WLFW_MAX_BUILD_ID_LEN    128
 
 #ifndef ICNSS_API_WITH_DEV
 #define ICNSS_API_WITH_DEV
@@ -97,6 +98,10 @@ struct icnss_shadow_reg_v2_cfg {
 	u32 addr;
 };
 
+struct icnss_shadow_reg_v3_cfg {
+	u32 addr;
+};
+
 struct icnss_rri_over_ddr_cfg {
 	u32 base_addr_low;
 	u32 base_addr_high;
@@ -111,6 +116,8 @@ struct icnss_wlan_enable_cfg {
 	struct icnss_shadow_reg_cfg *shadow_reg_cfg;
 	u32 num_shadow_reg_v2_cfg;
 	struct icnss_shadow_reg_v2_cfg *shadow_reg_v2_cfg;
+	u32 num_shadow_reg_v3_cfg;
+	struct icnss_shadow_reg_v3_cfg *shadow_reg_v3_cfg;
 	bool rri_over_ddr_cfg_valid;
 	struct icnss_rri_over_ddr_cfg rri_over_ddr_cfg;
 };
@@ -136,6 +143,7 @@ struct icnss_soc_info {
 	uint32_t soc_id;
 	uint32_t fw_version;
 	char fw_build_timestamp[ICNSS_MAX_TIMESTAMP_LEN + 1];
+	char fw_build_id[ICNSS_WLFW_MAX_BUILD_ID_LEN + 1];
 };
 
 enum icnss_pinctrl_seq {

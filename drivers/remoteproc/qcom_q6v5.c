@@ -21,6 +21,7 @@
 #include <linux/delay.h>
 #include "qcom_common.h"
 #include "qcom_q6v5.h"
+#include <trace/events/rproc_qcom.h>
 
 #define Q6V5_PANIC_DELAY_MS	200
 
@@ -109,6 +110,7 @@ EXPORT_SYMBOL(update_crash_reason);
 static irqreturn_t q6v5_wdog_interrupt(int irq, void *data)
 {
 	struct qcom_q6v5 *q6v5 = data;
+	struct qcom_rproc_ssr *ssr;
 	size_t len;
 	char *msg;
 
@@ -126,12 +128,15 @@ static irqreturn_t q6v5_wdog_interrupt(int irq, void *data)
 		dev_err(q6v5->dev, "watchdog without message\n");
 
 	q6v5->running = false;
-	update_crash_reason(q6v5, msg, len);
+	trace_rproc_qcom_event(dev_name(q6v5->dev), "q6v5_wdog", msg);
 	if (q6v5->rproc->recovery_disabled) {
 		schedule_work(&q6v5->crash_handler);
 	} else {
-		if (q6v5->ssr_subdev)
+		if (q6v5->ssr_subdev) {
 			qcom_notify_early_ssr_clients(q6v5->ssr_subdev);
+			ssr = container_of(q6v5->ssr_subdev, struct qcom_rproc_ssr, subdev);
+			ssr->is_notified = true;
+		}
 
 		rproc_report_crash(q6v5->rproc, RPROC_WATCHDOG);
 	}
@@ -142,6 +147,7 @@ static irqreturn_t q6v5_wdog_interrupt(int irq, void *data)
 static irqreturn_t q6v5_fatal_interrupt(int irq, void *data)
 {
 	struct qcom_q6v5 *q6v5 = data;
+	struct qcom_rproc_ssr *ssr;
 	size_t len;
 	char *msg;
 
@@ -157,12 +163,15 @@ static irqreturn_t q6v5_fatal_interrupt(int irq, void *data)
 		dev_err(q6v5->dev, "fatal error without message\n");
 
 	q6v5->running = false;
-	update_crash_reason(q6v5, msg, len);
+	trace_rproc_qcom_event(dev_name(q6v5->dev), "q6v5_fatal", msg);
 	if (q6v5->rproc->recovery_disabled) {
 		schedule_work(&q6v5->crash_handler);
 	} else {
-		if (q6v5->ssr_subdev)
+		if (q6v5->ssr_subdev) {
 			qcom_notify_early_ssr_clients(q6v5->ssr_subdev);
+			ssr = container_of(q6v5->ssr_subdev, struct qcom_rproc_ssr, subdev);
+			ssr->is_notified = true;
+		}
 
 		rproc_report_crash(q6v5->rproc, RPROC_FATAL_ERROR);
 	}

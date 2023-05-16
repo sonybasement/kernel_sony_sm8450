@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2002,2007-2021, The Linux Foundation. All rights reserved.
  */
 
@@ -646,7 +647,25 @@ static int kgsl_paged_map_kernel(struct kgsl_memdesc *memdesc)
 
 	mutex_lock(&kernel_map_global_lock);
 	if ((!memdesc->hostptr) && (memdesc->pages != NULL)) {
-		pgprot_t page_prot = pgprot_writecombine(PAGE_KERNEL);
+		pgprot_t page_prot;
+		int cache;
+
+		/* Determine user-side caching policy */
+		cache = kgsl_memdesc_get_cachemode(memdesc);
+		switch (cache) {
+		case KGSL_CACHEMODE_WRITETHROUGH:
+			page_prot = PAGE_KERNEL;
+			WARN_ONCE(1, "WRITETHROUGH is deprecated for arm64");
+			break;
+		case KGSL_CACHEMODE_WRITEBACK:
+			page_prot = PAGE_KERNEL;
+			break;
+		case KGSL_CACHEMODE_UNCACHED:
+		case KGSL_CACHEMODE_WRITECOMBINE:
+		default:
+			page_prot = pgprot_writecombine(PAGE_KERNEL);
+			break;
+		}
 
 		memdesc->hostptr = vmap(memdesc->pages, memdesc->page_count,
 					VM_IOREMAP, page_prot);
@@ -1069,6 +1088,7 @@ static int kgsl_memdesc_file_setup(struct kgsl_memdesc *memdesc, uint64_t size)
 		return ret;
 	}
 
+	mapping_set_unevictable(memdesc->shmem_filp->f_mapping);
 	return 0;
 }
 
@@ -1353,9 +1373,6 @@ void kgsl_unmap_and_put_gpuaddr(struct kgsl_memdesc *memdesc)
 	if (!memdesc->size || !memdesc->gpuaddr)
 		return;
 
-	if (WARN_ON(kgsl_memdesc_is_global(memdesc)))
-		return;
-
 	/*
 	 * Don't release the GPU address if the memory fails to unmap because
 	 * the IOMMU driver will BUG later if we reallocated the address and
@@ -1382,6 +1399,7 @@ static const struct kgsl_memdesc_ops kgsl_contiguous_ops = {
 static const struct kgsl_memdesc_ops kgsl_secure_system_ops = {
 	.free = kgsl_free_secure_system_pages,
 	/* FIXME: Make sure vmflags / vmfault does the right thing here */
+	.put_gpuaddr = kgsl_unmap_and_put_gpuaddr,
 };
 
 static const struct kgsl_memdesc_ops kgsl_secure_page_ops = {

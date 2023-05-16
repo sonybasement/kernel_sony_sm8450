@@ -27,6 +27,13 @@ enum ipcmem_host_type {
 	IPCMEM_INVALID_HOST =  0xFF,				  /**< Invalid processor */
 };
 
+/**
+ * IPCLite return codes
+ */
+#define IPCLITE_SUCCESS		0 /*< Success > */
+#define IPCLITE_FAILURE		1 /*< Failure > */
+#define IPCLITE_EINCHAN		9 /*< Inactive Channel */
+
 struct global_region_info {
 	void *virt_base;
 	uint32_t size;
@@ -82,6 +89,15 @@ int32_t ipclite_register_test_client(IPCLite_Client cb_func_ptr, void *priv);
  * @return Zero on successful registration, negative on failure.
  */
 int32_t get_global_partition_info(struct global_region_info *global_ipcmem);
+
+/**
+ * ipclite_recover() - Recovers the ipclite if any core goes for SSR
+ *
+ * core_id	: takes the core id of the core which went to SSR.
+ *
+ * @return None.
+ */
+void ipclite_recover(enum ipcmem_host_type core_id);
 
 /**
  * ipclite_atomic_init_u32() - Initializes the global memory with uint32_t value.

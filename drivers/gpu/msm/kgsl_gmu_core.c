@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/iopoll.h>
@@ -33,7 +34,7 @@ void __init gmu_core_register(void)
 	of_node_put(node);
 }
 
-void __exit gmu_core_unregister(void)
+void gmu_core_unregister(void)
 {
 	const struct of_device_id *match;
 	struct device_node *node;
@@ -163,7 +164,7 @@ int gmu_core_dev_wait_for_active_transition(struct kgsl_device *device)
 
 void gmu_core_fault_snapshot(struct kgsl_device *device)
 {
-	kgsl_device_snapshot(device, NULL, true);
+	kgsl_device_snapshot(device, NULL, NULL, true);
 }
 
 int gmu_core_timed_poll_check(struct kgsl_device *device,

@@ -52,6 +52,14 @@ static void syncobj_destroy_object(struct kgsl_drawobj *drawobj)
 				kfree(priv->fences);
 				kfree(priv);
 			}
+
+			if (event->handle) {
+				struct kgsl_sync_fence_cb *kcb = event->handle;
+
+				dma_fence_put(kcb->fence);
+				kfree(kcb);
+			}
+
 		} else if (event->type == KGSL_CMD_SYNCPOINT_TYPE_TIMELINE) {
 			kfree(event->priv);
 		}
@@ -736,6 +744,9 @@ int kgsl_drawobj_sync_add_sync(struct kgsl_device *device,
 	struct kgsl_cmd_syncpoint *sync)
 {
 	struct kgsl_drawobj *drawobj = DRAWOBJ(syncobj);
+
+	if (sync->type != KGSL_CMD_SYNCPOINT_TYPE_FENCE)
+		syncobj->flags |= KGSL_SYNCOBJ_SW;
 
 	if (sync->type == KGSL_CMD_SYNCPOINT_TYPE_TIMESTAMP)
 		return drawobj_add_sync_timestamp_from_user(device,

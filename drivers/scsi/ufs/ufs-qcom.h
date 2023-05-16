@@ -5,7 +5,7 @@
  * and licensed under the license of the file.
  */
 /* Copyright (c) 2013-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef UFS_QCOM_H_
@@ -236,6 +236,12 @@ enum ufs_qcom_phy_init_type {
  * Enable this quirk to give it an additional 100us.
  */
 #define UFS_DEVICE_QUIRK_PA_HIBER8TIME          (1 << 15)
+
+/*
+ * Some ufs device vendors need a different TSync length.
+ * Enable this quirk to give an additional TX_HS_SYNC_LENGTH.
+ */
+#define UFS_DEVICE_QUIRK_PA_TX_HSG1_SYNC_LENGTH (1 << 16)
 
 static inline void
 ufs_qcom_get_controller_revision(struct ufs_hba *hba,
@@ -477,6 +483,11 @@ struct ufs_qcom_host {
 	u32 clk_next_mode;
 	u32 clk_curr_mode;
 	bool is_clk_scale_enabled;
+	atomic_t hi_pri_en;
+	atomic_t therm_mitigation;
+	cpumask_t perf_mask;
+	cpumask_t def_mask;
+	bool irq_affinity_support;
 };
 
 static inline u32

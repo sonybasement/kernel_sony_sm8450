@@ -6,7 +6,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/delay.h>
@@ -20,6 +20,7 @@
 #include <linux/rwsem.h>
 #include <linux/suspend.h>
 #include <linux/timer.h>
+#include <linux/thermal.h>
 #if IS_ENABLED(CONFIG_QCOM_MINIDUMP)
 #include <soc/qcom/minidump.h>
 #endif
@@ -303,6 +304,39 @@ int cnss_get_platform_cap(struct device *dev, struct cnss_platform_cap *cap)
 }
 EXPORT_SYMBOL(cnss_get_platform_cap);
 
+/**
+ * cnss_get_fw_cap - Check whether FW supports specific capability or not
+ * @dev: Device
+ * @fw_cap: FW Capability which needs to be checked
+ *
+ * Return: TRUE if supported, FALSE on failure or if not supported
+ */
+bool cnss_get_fw_cap(struct device *dev, enum cnss_fw_caps fw_cap)
+{
+	struct cnss_plat_data *plat_priv = cnss_bus_dev_to_plat_priv(dev);
+	bool ret = false;
+
+	if (!plat_priv)
+		return ret;
+
+	if (!plat_priv->fw_caps)
+		return ret;
+
+	switch (fw_cap) {
+	case CNSS_FW_CAP_DIRECT_LINK_SUPPORT:
+		ret = !!(plat_priv->fw_caps &
+			 QMI_WLFW_DIRECT_LINK_SUPPORT_V01);
+		break;
+	default:
+		cnss_pr_err("Invalid FW Capability: 0x%x\n", fw_cap);
+	}
+
+	cnss_pr_dbg("FW Capability 0x%x is %s\n", fw_cap,
+		    ret ? "supported" : "not supported");
+	return ret;
+}
+EXPORT_SYMBOL(cnss_get_fw_cap);
+
 void cnss_request_pm_qos(struct device *dev, u32 qos_val)
 {
 	struct cnss_plat_data *plat_priv = cnss_bus_dev_to_plat_priv(dev);
@@ -330,8 +364,19 @@ int cnss_wlan_enable(struct device *dev,
 		     enum cnss_driver_mode mode,
 		     const char *host_version)
 {
-	struct cnss_plat_data *plat_priv = cnss_bus_dev_to_plat_priv(dev);
 	int ret = 0;
+	struct cnss_plat_data *plat_priv;
+
+	if (!dev) {
+		cnss_pr_err("Invalid dev pointer\n");
+		return -EINVAL;
+	}
+
+	plat_priv = cnss_bus_dev_to_plat_priv(dev);
+	if (!plat_priv) {
+		cnss_pr_err("plat_priv is NULL\n");
+		return -EINVAL;
+	}
 
 	if (plat_priv->device_id == QCA6174_DEVICE_ID)
 		return 0;
@@ -363,8 +408,19 @@ EXPORT_SYMBOL(cnss_wlan_enable);
 
 int cnss_wlan_disable(struct device *dev, enum cnss_driver_mode mode)
 {
-	struct cnss_plat_data *plat_priv = cnss_bus_dev_to_plat_priv(dev);
 	int ret = 0;
+	struct cnss_plat_data *plat_priv;
+
+	if (!dev) {
+		cnss_pr_err("Invalid dev pointer\n");
+		return -EINVAL;
+	}
+
+	plat_priv = cnss_bus_dev_to_plat_priv(dev);
+	if (!plat_priv) {
+		cnss_pr_err("plat_priv is NULL\n");
+		return -EINVAL;
+	}
 
 	if (plat_priv->device_id == QCA6174_DEVICE_ID)
 		return 0;
@@ -439,7 +495,18 @@ EXPORT_SYMBOL(cnss_athdiag_write);
 
 int cnss_set_fw_log_mode(struct device *dev, u8 fw_log_mode)
 {
-	struct cnss_plat_data *plat_priv = cnss_bus_dev_to_plat_priv(dev);
+	struct cnss_plat_data *plat_priv;
+
+	if (!dev) {
+		cnss_pr_err("Invalid dev pointer\n");
+		return -EINVAL;
+	}
+
+	plat_priv = cnss_bus_dev_to_plat_priv(dev);
+	if (!plat_priv) {
+		cnss_pr_err("plat_priv is NULL\n");
+		return -EINVAL;
+	}
 
 	if (plat_priv->device_id == QCA6174_DEVICE_ID)
 		return 0;
@@ -680,6 +747,11 @@ static int cnss_fw_ready_hdlr(struct cnss_plat_data *plat_priv)
 
 	if (!plat_priv)
 		return -ENODEV;
+
+	if (test_bit(CNSS_IN_REBOOT, &plat_priv->driver_state)) {
+		cnss_pr_err("Reboot is in progress, ignore FW ready\n");
+		return -EINVAL;
+	}
 
 	cnss_pr_dbg("Processing FW Init Done..\n");
 	del_timer(&plat_priv->fw_boot_timer);
@@ -3174,6 +3246,8 @@ static ssize_t fs_ready_store(struct device *dev,
 		return count;
 	}
 
+	set_bit(CNSS_FS_READY, &plat_priv->driver_state);
+
 	if (test_bit(QMI_BYPASS, &plat_priv->ctrl_params.quirks)) {
 		cnss_pr_dbg("QMI is bypassed\n");
 		return count;
@@ -3192,11 +3266,17 @@ static ssize_t fs_ready_store(struct device *dev,
 		return count;
 	}
 
-	if (fs_ready == FILE_SYSTEM_READY && plat_priv->cbc_enabled)
+	if (fs_ready == FILE_SYSTEM_READY && plat_priv->cbc_enabled) {
 		cnss_driver_event_post(plat_priv,
 				       CNSS_DRIVER_EVENT_COLD_BOOT_CAL_START,
 				       0, NULL);
 
+	} else if (test_bit(CNSS_DRIVER_REGISTER, &plat_priv->driver_state)) {
+		cnss_pr_dbg("Schedule WLAN driver load from FS Ready\n");
+		if (cancel_delayed_work_sync(&plat_priv->wlan_reg_driver_work))
+			schedule_delayed_work(&plat_priv->wlan_reg_driver_work,
+					      0);
+	}
 	return count;
 }
 
@@ -3453,7 +3533,9 @@ static int cnss_misc_init(struct cnss_plat_data *plat_priv)
 		cnss_pr_err("QMI IPC connection call back register failed, err = %d\n",
 			    ret);
 
-	plat_priv->sram_dump = kcalloc(SRAM_DUMP_SIZE, 1, GFP_KERNEL);
+	if (plat_priv->device_id == QCA6490_DEVICE_ID &&
+	    cnss_get_host_build_type() == QMI_HOST_BUILD_TYPE_PRIMARY_V01)
+		plat_priv->sram_dump = kcalloc(SRAM_DUMP_SIZE, 1, GFP_KERNEL);
 
 	return 0;
 }
@@ -3474,6 +3556,7 @@ static void cnss_misc_deinit(struct cnss_plat_data *plat_priv)
 	wakeup_source_unregister(plat_priv->recovery_ws);
 	cnss_deinit_sol_gpio(plat_priv);
 	kfree(plat_priv->sram_dump);
+	kfree(plat_priv->on_chip_pmic_board_ids);
 }
 
 static void cnss_init_control_params(struct cnss_plat_data *plat_priv)
@@ -3563,6 +3646,213 @@ cnss_use_nv_mac(struct cnss_plat_data *plat_priv)
 	return of_property_read_bool(plat_priv->plat_dev->dev.of_node,
 				     "use-nv-mac");
 }
+
+int cnss_set_wfc_mode(struct device *dev, struct cnss_wfc_cfg cfg)
+{
+	struct cnss_plat_data *plat_priv = cnss_bus_dev_to_plat_priv(dev);
+	int ret = 0;
+
+	if (!plat_priv)
+		return -ENODEV;
+
+	/* If IMS server is connected, return success without QMI send */
+	if (test_bit(CNSS_IMS_CONNECTED, &plat_priv->driver_state)) {
+		cnss_pr_dbg("Ignore host request as IMS server is connected");
+		return ret;
+	}
+
+	ret = cnss_wlfw_send_host_wfc_call_status(plat_priv, cfg);
+
+	return ret;
+}
+EXPORT_SYMBOL(cnss_set_wfc_mode);
+
+static int cnss_tcdev_get_max_state(struct thermal_cooling_device *tcdev,
+				    unsigned long *thermal_state)
+{
+	struct cnss_thermal_cdev *cnss_tcdev = NULL;
+
+	if (!tcdev || !tcdev->devdata) {
+		cnss_pr_err("tcdev or tcdev->devdata is null!\n");
+		return -EINVAL;
+	}
+
+	cnss_tcdev = tcdev->devdata;
+	*thermal_state = cnss_tcdev->max_thermal_state;
+
+	return 0;
+}
+
+static int cnss_tcdev_get_cur_state(struct thermal_cooling_device *tcdev,
+				    unsigned long *thermal_state)
+{
+	struct cnss_thermal_cdev *cnss_tcdev = NULL;
+
+	if (!tcdev || !tcdev->devdata) {
+		cnss_pr_err("tcdev or tcdev->devdata is null!\n");
+		return -EINVAL;
+	}
+
+	cnss_tcdev = tcdev->devdata;
+	*thermal_state = cnss_tcdev->curr_thermal_state;
+
+	return 0;
+}
+
+static int cnss_tcdev_set_cur_state(struct thermal_cooling_device *tcdev,
+				    unsigned long thermal_state)
+{
+	struct cnss_thermal_cdev *cnss_tcdev = NULL;
+	struct cnss_plat_data *plat_priv =  cnss_get_plat_priv(NULL);
+	int ret = 0;
+
+	if (!tcdev || !tcdev->devdata) {
+		cnss_pr_err("tcdev or tcdev->devdata is null!\n");
+		return -EINVAL;
+	}
+
+	cnss_tcdev = tcdev->devdata;
+
+	if (thermal_state > cnss_tcdev->max_thermal_state)
+		return -EINVAL;
+
+	cnss_pr_vdbg("Cooling device set current state: %ld,for cdev id %d",
+		     thermal_state, cnss_tcdev->tcdev_id);
+
+	mutex_lock(&plat_priv->tcdev_lock);
+	ret = cnss_bus_set_therm_cdev_state(plat_priv,
+					    thermal_state,
+					    cnss_tcdev->tcdev_id);
+	if (!ret)
+		cnss_tcdev->curr_thermal_state = thermal_state;
+	mutex_unlock(&plat_priv->tcdev_lock);
+	if (ret) {
+		cnss_pr_err("Setting Current Thermal State Failed: %d,for cdev id %d",
+			    ret, cnss_tcdev->tcdev_id);
+		return ret;
+	}
+
+	return 0;
+}
+
+static struct thermal_cooling_device_ops cnss_cooling_ops = {
+	.get_max_state = cnss_tcdev_get_max_state,
+	.get_cur_state = cnss_tcdev_get_cur_state,
+	.set_cur_state = cnss_tcdev_set_cur_state,
+};
+
+int cnss_thermal_cdev_register(struct device *dev, unsigned long max_state,
+			       int tcdev_id)
+{
+	struct cnss_plat_data *priv = cnss_get_plat_priv(NULL);
+	struct cnss_thermal_cdev *cnss_tcdev = NULL;
+	char cdev_node_name[THERMAL_NAME_LENGTH] = "";
+	struct device_node *dev_node;
+	int ret = 0;
+
+	if (!priv) {
+		cnss_pr_err("Platform driver is not initialized!\n");
+		return -ENODEV;
+	}
+
+	cnss_tcdev = kzalloc(sizeof(*cnss_tcdev), GFP_KERNEL);
+	if (!cnss_tcdev)
+		return -ENOMEM;
+
+	cnss_tcdev->tcdev_id = tcdev_id;
+	cnss_tcdev->max_thermal_state = max_state;
+
+	snprintf(cdev_node_name, THERMAL_NAME_LENGTH,
+		 "qcom,cnss_cdev%d", tcdev_id);
+
+	dev_node = of_find_node_by_name(NULL, cdev_node_name);
+	if (!dev_node) {
+		cnss_pr_err("Failed to get cooling device node\n");
+		kfree(cnss_tcdev);
+		return -EINVAL;
+	}
+
+	cnss_pr_dbg("tcdev node->name=%s\n", dev_node->name);
+
+	if (of_find_property(dev_node, "#cooling-cells", NULL)) {
+		cnss_tcdev->tcdev = thermal_of_cooling_device_register(dev_node,
+								       cdev_node_name,
+								       cnss_tcdev,
+								       &cnss_cooling_ops);
+		if (IS_ERR_OR_NULL(cnss_tcdev->tcdev)) {
+			ret = PTR_ERR(cnss_tcdev->tcdev);
+			cnss_pr_err("Cooling device register failed: %d, for cdev id %d\n",
+				    ret, cnss_tcdev->tcdev_id);
+			kfree(cnss_tcdev);
+		} else {
+			cnss_pr_dbg("Cooling device registered for cdev id %d",
+				    cnss_tcdev->tcdev_id);
+			mutex_lock(&priv->tcdev_lock);
+			list_add(&cnss_tcdev->tcdev_list,
+				 &priv->cnss_tcdev_list);
+			mutex_unlock(&priv->tcdev_lock);
+		}
+	} else {
+		cnss_pr_dbg("Cooling device registration not supported");
+		kfree(cnss_tcdev);
+		ret = -EOPNOTSUPP;
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL(cnss_thermal_cdev_register);
+
+void cnss_thermal_cdev_unregister(struct device *dev, int tcdev_id)
+{
+	struct cnss_plat_data *priv = cnss_get_plat_priv(NULL);
+	struct cnss_thermal_cdev *cnss_tcdev = NULL;
+
+	if (!priv) {
+		cnss_pr_err("Platform driver is not initialized!\n");
+		return;
+	}
+
+	mutex_lock(&priv->tcdev_lock);
+	while (!list_empty(&priv->cnss_tcdev_list)) {
+		cnss_tcdev = list_first_entry(&priv->cnss_tcdev_list,
+					      struct cnss_thermal_cdev,
+					      tcdev_list);
+		thermal_cooling_device_unregister(cnss_tcdev->tcdev);
+		list_del(&cnss_tcdev->tcdev_list);
+		kfree(cnss_tcdev);
+	}
+	mutex_unlock(&priv->tcdev_lock);
+}
+EXPORT_SYMBOL(cnss_thermal_cdev_unregister);
+
+int cnss_get_curr_therm_cdev_state(struct device *dev,
+				   unsigned long *thermal_state,
+				   int tcdev_id)
+{
+	struct cnss_plat_data *priv = cnss_get_plat_priv(NULL);
+	struct cnss_thermal_cdev *cnss_tcdev = NULL;
+
+	if (!priv) {
+		cnss_pr_err("Platform driver is not initialized!\n");
+		return -ENODEV;
+	}
+
+	mutex_lock(&priv->tcdev_lock);
+	list_for_each_entry(cnss_tcdev, &priv->cnss_tcdev_list, tcdev_list) {
+		if (cnss_tcdev->tcdev_id != tcdev_id)
+			continue;
+
+		*thermal_state = cnss_tcdev->curr_thermal_state;
+		mutex_unlock(&priv->tcdev_lock);
+		cnss_pr_dbg("Cooling device current state: %ld, for cdev id %d",
+			    cnss_tcdev->curr_thermal_state, tcdev_id);
+		return 0;
+	}
+	mutex_unlock(&priv->tcdev_lock);
+	cnss_pr_dbg("Cooling device ID not found: %d", tcdev_id);
+	return -EINVAL;
+}
+EXPORT_SYMBOL(cnss_get_curr_therm_cdev_state);
 
 static int cnss_probe(struct platform_device *plat_dev)
 {
@@ -3674,6 +3964,9 @@ retry:
 
 	cnss_register_coex_service(plat_priv);
 	cnss_register_ims_service(plat_priv);
+
+	mutex_init(&plat_priv->tcdev_lock);
+	INIT_LIST_HEAD(&plat_priv->cnss_tcdev_list);
 
 	ret = cnss_genl_init();
 	if (ret < 0)

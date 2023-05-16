@@ -6,7 +6,7 @@
  */
 /*
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _CNSS_MAIN_H
@@ -44,7 +44,6 @@
 
 #define MAX_NO_OF_MAC_ADDR		4
 #define QMI_WLFW_MAX_TIMESTAMP_LEN	32
-#define QMI_WLFW_MAX_NUM_MEM_SEG	32
 #define QMI_WLFW_MAX_BUILD_ID_LEN	128
 #define CNSS_RDDM_TIMEOUT_MS		20000
 #define RECOVERY_TIMEOUT		60000
@@ -316,6 +315,7 @@ enum cnss_driver_state {
 	CNSS_DAEMON_CONNECTED,
 	CNSS_PCI_PROBE_DONE,
 	CNSS_DRIVER_REGISTER,
+	CNSS_FS_READY,
 };
 
 struct cnss_recovery_data {
@@ -435,6 +435,15 @@ struct cnss_sol_gpio {
 	int host_sol_gpio;
 };
 
+struct cnss_thermal_cdev {
+	struct list_head tcdev_list;
+	int tcdev_id;
+	unsigned long curr_thermal_state;
+	unsigned long max_thermal_state;
+	struct device_node *dev_node;
+	struct thermal_cooling_device *tcdev;
+};
+
 struct cnss_plat_data {
 	struct platform_device *plat_dev;
 	void *bus_priv;
@@ -466,6 +475,8 @@ struct cnss_plat_data {
 	u8 hds_enabled;
 	unsigned long driver_state;
 	struct list_head event_list;
+	struct list_head cnss_tcdev_list;
+	struct mutex tcdev_lock; /* mutex for cooling devices list access */
 	spinlock_t event_lock; /* spinlock for driver work event handling */
 	struct work_struct event_work;
 	struct workqueue_struct *event_wq;
@@ -481,7 +492,7 @@ struct cnss_plat_data {
 	char fw_build_id[QMI_WLFW_MAX_BUILD_ID_LEN + 1];
 	u32 otp_version;
 	u32 fw_mem_seg_len;
-	struct cnss_fw_mem fw_mem[QMI_WLFW_MAX_NUM_MEM_SEG];
+	struct cnss_fw_mem fw_mem[QMI_WLFW_MAX_NUM_MEM_SEG_V01];
 	struct cnss_fw_mem m3_mem;
 	struct cnss_fw_mem *cal_mem;
 	u64 cal_time;
@@ -489,7 +500,7 @@ struct cnss_plat_data {
 	u32 cal_file_size;
 	struct completion daemon_connected;
 	u32 qdss_mem_seg_len;
-	struct cnss_fw_mem qdss_mem[QMI_WLFW_MAX_NUM_MEM_SEG];
+	struct cnss_fw_mem qdss_mem[QMI_WLFW_MAX_NUM_MEM_SEG_V01];
 	u32 *qdss_reg;
 	struct cnss_pin_connect_result pin_result;
 	struct dentry *root_dentry;
@@ -529,6 +540,7 @@ struct cnss_plat_data {
 	u8 set_wlaon_pwr_ctrl;
 	struct cnss_tcs_info tcs_info;
 	bool fw_pcie_gen_switch;
+	u64 fw_caps;
 	u8 pcie_gen_speed;
 	struct cnss_dms_data dms;
 	int power_up_error;
@@ -549,6 +561,9 @@ struct cnss_plat_data {
 	/* bitmap to detect FEM combination */
 	u8 hwid_bitmap;
 	enum cnss_driver_mode driver_mode;
+	u32 num_shadow_regs_v3;
+	u32 on_chip_pmic_devices_count;
+	u32 *on_chip_pmic_board_ids;
 };
 
 #if IS_ENABLED(CONFIG_ARCH_QCOM)

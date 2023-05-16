@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/kernel.h>
@@ -21,6 +21,7 @@
 #include <linux/regmap.h>
 #include <linux/reset.h>
 #include <linux/mfd/syscon.h>
+#include <linux/interconnect.h>
 
 #include "../../regulator/internal.h"
 #include "gdsc-debug.h"
@@ -34,6 +35,10 @@
 #define HW_CONTROL_MASK		BIT(1)
 #define SW_COLLAPSE_MASK	BIT(0)
 
+/* CFG_GDSCR */
+#define POWER_DOWN_COMPLETE_MASK	BIT(15)
+#define POWER_UP_COMPLETE_MASK	BIT(16)
+
 /* Domain Address */
 #define GMEM_CLAMP_IO_MASK	BIT(0)
 #define GMEM_RESET_MASK         BIT(4)
@@ -43,13 +48,21 @@
 
 /* Register Offset */
 #define REG_OFFSET		0x0
+#define CFG_GDSCR_OFFSET	0x4
 
 /* Timeout Delay */
-#define TIMEOUT_US		500
+#define TIMEOUT_US		1500
 
 struct collapse_vote {
 	struct regmap	**regmap;
 	u32		vote_bit;
+};
+
+struct clk_ctrl {
+	struct regmap	*regmap;
+	unsigned int	offset;
+	unsigned int	bit;
+	bool		en_inverted;
 };
 
 struct gdsc {
@@ -60,9 +73,11 @@ struct gdsc {
 	struct regmap           *domain_addr;
 	struct regmap           *hw_ctrl;
 	struct regmap           **sw_resets;
+	struct clk_ctrl		*clk_ctrl;
 	struct collapse_vote	collapse_vote;
 	struct clk		**clocks;
 	struct reset_control	**reset_clocks;
+	struct icc_path		**paths;
 	bool			toggle_logic;
 	bool			retain_ff_enable;
 	bool			resets_asserted;
@@ -78,8 +93,11 @@ struct gdsc {
 	int			root_clk_idx;
 	int			sw_reset_count;
 	int			collapse_count;
+	int			clk_ctrl_count;
+	int			path_count;
 	u32			gds_timeout;
 	bool			skip_disable_before_enable;
+	bool			cfg_gdscr;
 };
 
 enum gdscr_status {
@@ -99,27 +117,40 @@ static int poll_gdsc_status(struct gdsc *sc, enum gdscr_status status)
 {
 	struct regmap *regmap;
 	int count = sc->gds_timeout;
-	u32 val;
+	u32 val, reg_offset;
 
 	if (sc->hw_ctrl)
 		regmap = sc->hw_ctrl;
 	else
 		regmap = sc->regmap;
 
+	if (sc->cfg_gdscr)
+		reg_offset = CFG_GDSCR_OFFSET;
+	else
+		reg_offset = REG_OFFSET;
+
 	for (; count > 0; count--) {
-		regmap_read(regmap, REG_OFFSET, &val);
-		val &= PWR_ON_MASK;
+		regmap_read(regmap, reg_offset, &val);
 
 		switch (status) {
 		case ENABLED:
-			if (val)
-				return 0;
+			if (sc->cfg_gdscr)
+				val &= POWER_UP_COMPLETE_MASK;
+			else
+				val &= PWR_ON_MASK;
 			break;
 		case DISABLED:
-			if (!val)
-				return 0;
+			if (sc->cfg_gdscr) {
+				val &= POWER_DOWN_COMPLETE_MASK;
+			} else {
+				val &= PWR_ON_MASK;
+				val = !val;
+			}
 			break;
 		}
+
+		if (val)
+			return 0;
 		/*
 		 * There is no guarantee about the delay needed for the enable
 		 * bit in the GDSCR to be set or reset after the GDSC state
@@ -144,13 +175,13 @@ static int gdsc_init_is_enabled(struct gdsc *sc)
 		return 0;
 	}
 
+	regmap = sc->regmap;
+	mask = SW_COLLAPSE_MASK;
+
 	if (sc->collapse_count) {
 		for (i = 0; i < sc->collapse_count; i++)
 			regmap = sc->collapse_vote.regmap[i];
 		mask = BIT(sc->collapse_vote.vote_bit);
-	} else {
-		regmap = sc->regmap;
-		mask = SW_COLLAPSE_MASK;
 	}
 
 	ret = regmap_read(regmap, REG_OFFSET, &regval);
@@ -175,6 +206,24 @@ static int gdsc_is_enabled(struct regulator_dev *rdev)
 	return sc->is_gdsc_enabled;
 }
 
+static void gdsc_clk_ctrl(struct gdsc *sc, bool en)
+{
+	uint32_t clk_ctrl_mask, clk_ctrl_val;
+	int i;
+
+	for (i = 0; i < sc->clk_ctrl_count; i++) {
+		clk_ctrl_mask = BIT(sc->clk_ctrl[i].bit);
+
+		if (sc->clk_ctrl[i].en_inverted ^ en)
+			clk_ctrl_val = clk_ctrl_mask;
+		else
+			clk_ctrl_val = 0;
+
+		regmap_update_bits(sc->clk_ctrl[i].regmap,
+			sc->clk_ctrl[i].offset, clk_ctrl_mask, clk_ctrl_val);
+	}
+}
+
 static int gdsc_enable(struct regulator_dev *rdev)
 {
 	struct gdsc *sc = rdev_get_drvdata(rdev);
@@ -196,7 +245,18 @@ static int gdsc_enable(struct regulator_dev *rdev)
 		return -EBUSY;
 	}
 
+	if (sc->clk_ctrl_count)
+		gdsc_clk_ctrl(sc, true);
+
 	if (sc->toggle_logic) {
+		for (i = 0; i < sc->path_count; i++) {
+			ret = icc_set_bw(sc->paths[i], 1, 1);
+			if (ret) {
+				dev_err(&rdev->dev, "Failed to vote BW for %d, ret=%d\n", i, ret);
+				return ret;
+			}
+		}
+
 		if (sc->sw_reset_count) {
 			for (i = 0; i < sc->sw_reset_count; i++)
 				regmap_set_bits(sc->sw_resets[i], REG_OFFSET,
@@ -365,6 +425,9 @@ static int gdsc_disable(struct regulator_dev *rdev)
 		}
 	}
 
+	if (sc->clk_ctrl_count)
+		gdsc_clk_ctrl(sc, false);
+
 	if (sc->force_root_en) {
 		clk_prepare_enable(sc->clocks[sc->root_clk_idx]);
 		sc->is_root_clk_voted = true;
@@ -412,6 +475,13 @@ static int gdsc_disable(struct regulator_dev *rdev)
 			regmap_write(sc->domain_addr, REG_OFFSET, regval);
 		}
 
+		for (i = 0; i < sc->path_count; i++) {
+			ret = icc_set_bw(sc->paths[i], 0, 0);
+			if (ret) {
+				dev_err(&rdev->dev, "Failed to unvote BW for %d: %d\n", i, ret);
+				return ret;
+			}
+		}
 	} else {
 		for (i = sc->reset_count - 1; i >= 0; i--)
 			reset_control_assert(sc->reset_clocks[i]);
@@ -617,7 +687,8 @@ static int gdsc_parse_dt_data(struct gdsc *sc, struct device *dev,
 				struct regulator_init_data **init_data)
 {
 	struct device_node *np;
-	int ret, i;
+	struct of_phandle_args args;
+	int ret, i, clk_ctrl_len;
 
 	*init_data = of_get_regulator_init_data(dev, dev->of_node, &sc->rdesc);
 	if (*init_data == NULL)
@@ -665,6 +736,43 @@ static int gdsc_parse_dt_data(struct gdsc *sc, struct device *dev,
 			return PTR_ERR(sc->hw_ctrl);
 	}
 
+	if (of_find_property(dev->of_node, "qcom,clk-ctrl", NULL)) {
+
+		clk_ctrl_len = of_count_phandle_with_args(dev->of_node, "qcom,clk-ctrl", NULL);
+
+		if (clk_ctrl_len % 4) {
+			dev_err(dev, "Invalid length of clk-ctrl arguments\n");
+			return -EINVAL;
+		}
+
+		sc->clk_ctrl_count = clk_ctrl_len / 4;
+
+		sc->clk_ctrl = devm_kmalloc_array(dev, sc->clk_ctrl_count,
+						   sizeof(*sc->clk_ctrl), GFP_KERNEL);
+		if (!sc->clk_ctrl)
+			return -ENOMEM;
+
+		for (i = 0; i < sc->clk_ctrl_count; i++) {
+			ret = of_parse_phandle_with_fixed_args(dev->of_node,
+						"qcom,clk-ctrl", 3, i, &args);
+			if (ret) {
+				dev_err(dev, "Failed to get clk-ctrl arguments for index:%d\n", i);
+				return ret;
+			}
+
+			sc->clk_ctrl[i].regmap = syscon_node_to_regmap(args.np);
+			of_node_put(args.np);
+			if (IS_ERR(sc->clk_ctrl[i].regmap)) {
+				dev_err(dev, "Failed to get clk-ctrl regmap for index:%d\n", i);
+				return PTR_ERR(sc->clk_ctrl[i].regmap);
+			}
+
+			sc->clk_ctrl[i].offset = args.args[0];
+			sc->clk_ctrl[i].bit = args.args[1];
+			sc->clk_ctrl[i].en_inverted = !!args.args[2];
+		}
+	}
+
 	sc->gds_timeout = TIMEOUT_US;
 	of_property_read_u32(dev->of_node, "qcom,gds-timeout",
 				&sc->gds_timeout);
@@ -679,6 +787,16 @@ static int gdsc_parse_dt_data(struct gdsc *sc, struct device *dev,
 		return sc->clock_count;
 	}
 
+	sc->path_count = of_property_count_strings(dev->of_node,
+						   "interconnect-names");
+	if (sc->path_count == -EINVAL) {
+		sc->path_count = 0;
+	} else if (sc->path_count < 0) {
+		dev_err(dev, "Failed to get interconnect names, ret=%d\n",
+			sc->path_count);
+		return sc->path_count;
+	}
+
 	sc->root_en = of_property_read_bool(dev->of_node,
 						"qcom,enable-root-clk");
 	sc->force_root_en = of_property_read_bool(dev->of_node,
@@ -691,6 +809,9 @@ static int gdsc_parse_dt_data(struct gdsc *sc, struct device *dev,
 						"qcom,retain-regs");
 	sc->skip_disable_before_enable = of_property_read_bool(dev->of_node,
 					"qcom,skip-disable-before-sw-enable");
+
+	sc->cfg_gdscr = of_property_read_bool(dev->of_node,
+					      "qcom,support-cfg-gdscr");
 
 	if (of_find_property(dev->of_node, "qcom,collapse-vote", NULL)) {
 		/* Decrement the collapse count by 1 */
@@ -792,6 +913,26 @@ static int gdsc_get_resources(struct gdsc *sc, struct platform_device *pdev)
 
 		if (!strcmp(clock_name, "core_root_clk"))
 			sc->root_clk_idx = i;
+	}
+
+	sc->paths = devm_kcalloc(dev, sc->path_count, sizeof(*sc->paths), GFP_KERNEL);
+	if (sc->path_count && !sc->paths)
+		return -ENOMEM;
+
+	for (i = 0; i < sc->path_count; i++) {
+		const char *name;
+
+		of_property_read_string_index(dev->of_node, "interconnect-names", i,
+					      &name);
+
+		sc->paths[i] = of_icc_get(dev, name);
+		if (IS_ERR(sc->paths[i])) {
+			ret = PTR_ERR(sc->paths[i]);
+			if (ret != -EPROBE_DEFER)
+				dev_err(dev, "Failed to get path %s, ret=%d\n",
+					name, ret);
+			return ret;
+		}
 	}
 
 	if ((sc->root_en || sc->force_root_en) && (sc->root_clk_idx == -1)) {
